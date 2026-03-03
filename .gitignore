@@ -1,0 +1,73 @@
+# ============================================
+# Cobalt - .gitignore
+# Flutter/Dart + PlatformIO
+# ============================================
+
+# ---------- Ancien dossier Git ----------
+.git_old/
+
+# ---------- Secrets / Env ----------
+.env
+*.env
+
+# ---------- IDE ----------
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+nul
+
+# ---------- Flutter / Dart ----------
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/pubspec.lock
+
+# Generated files
+**/*.g.dart
+**/*.freezed.dart
+**/*.mocks.dart
+
+# ---------- Android (inside Flutter) ----------
+**/android/.gradle/
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+**/*.jks
+**/*.keystore
+
+# ---------- iOS (inside Flutter) ----------
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# ---------- PlatformIO ----------
+**/.pio/
+**/lib_deps/
+**/.pioenvs/
+**/.piolibdeps/
+
+# ---------- Claude Code ----------
+**/.claude/

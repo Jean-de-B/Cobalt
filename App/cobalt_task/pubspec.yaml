@@ -1,0 +1,116 @@
+name: cobalt_task
+description: "Cobalt Task - Assistant vocal intelligent avec actions locales Android"
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Bluetooth Low Energy
+  flutter_blue_plus: ^1.31.0
+
+  # Base de données locale (archive des enregistrements)
+  sqflite: ^2.3.0
+  path: ^1.9.0
+
+  # Gestion des fichiers
+  path_provider: ^2.1.0
+
+  # Variables d'environnement
+  flutter_dotenv: ^6.0.0
+
+  # Requêtes HTTP pour l'API Groq
+  http: ^1.2.0
+
+  # SHA256 pour OAuth2 PKCE (Spotify)
+  crypto: ^3.0.0
+
+  # Gestion des permissions
+  permission_handler: ^11.0.0
+
+  # Lecture audio
+  audioplayers: ^5.2.0
+
+  # Enregistrement audio depuis le microphone
+  record: ^6.0.0
+
+  # ===========================================================================
+  # ACTIONS LOCALES ANDROID (Nouveau)
+  # ===========================================================================
+
+  # Calendrier local Android
+  device_calendar: ^4.3.1
+  timezone: ^0.9.2
+
+  # Intents Android (alarmes, timers, SMS)
+  android_intent_plus: ^5.0.2
+
+  # Contrôle du volume système
+  volume_controller: ^2.0.7
+
+  # URL Launcher (appels, navigation, deep links)
+  url_launcher: ^6.2.4
+
+  # Lampe torche
+  torch_light: ^1.0.0
+
+  # Accès aux contacts (recherche de destinataires SMS/Appels)
+  flutter_contacts: ^1.1.7+1
+
+  # Stockage sécurisé (credentials PayPal)
+  flutter_secure_storage: ^9.2.4
+
+
+  # ===========================================================================
+  # MODE ARRIÈRE-PLAN (écran verrouillé)
+  # ===========================================================================
+
+  # Foreground Service avec notification persistante
+  flutter_foreground_task: ^6.0.0+1
+
+  # Maintenir le CPU actif pendant les opérations
+  wakelock_plus: ^1.1.0
+
+  # Speech-to-Text local (offline) avec Sherpa-ONNX
+  # Remplace Vosk (incompatible AGP 8+)
+  # Support: streaming ASR, français, 100% offline
+  sherpa_onnx: ^1.12.23
+
+  # Text-to-Speech pour confirmations audio
+  flutter_tts: ^3.8.5
+
+  # Géolocalisation GPS (position utilisateur pour Directions API)
+  geolocator: ^13.0.2
+
+  # ===========================================================================
+  # GOOGLE SERVICES (Conservés pour migration progressive)
+  # ===========================================================================
+  google_sign_in: ^6.2.1
+  googleapis: ^13.2.0
+  googleapis_auth: ^1.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+
+# Configuration de l'icône de l'application
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/logo_icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/logo_foreground.png"
+
+flutter:
+  uses-material-design: true
+
+  # Fichier d'environnement
+  assets:
+    - .env
+    - assets/

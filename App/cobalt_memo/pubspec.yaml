@@ -1,0 +1,64 @@
+name: cobalt_memo
+description: "Cobalt Voice - Application de transcription de notes vocales via BLE"
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Bluetooth Low Energy
+  flutter_blue_plus: ^1.31.0
+
+  # Base de données locale
+  sqflite: ^2.3.0
+  path: ^1.9.0
+
+  # Gestion des fichiers
+  path_provider: ^2.1.0
+
+  # Variables d'environnement
+  flutter_dotenv: ^6.0.0
+
+  # Requêtes HTTP pour l'API Groq
+  http: ^1.2.0
+
+  # Gestion des permissions
+  permission_handler: ^11.0.0
+
+  # Lecture audio
+  audioplayers: ^5.2.0
+
+  # Enregistrement audio depuis le microphone
+  record: ^6.0.0
+
+  # Service de premier plan (arrière-plan / écran verrouillé)
+  flutter_foreground_task: ^8.0.0
+
+  # Wake lock pour maintenir le CPU actif
+  wakelock_plus: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+
+# Configuration de l'icône de l'application
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/logo.png"
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "assets/logo_foreground.png"
+
+flutter:
+  uses-material-design: true
+
+  # Fichier d'environnement
+  assets:
+    - .env
+    - assets/

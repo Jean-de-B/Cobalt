@@ -1,0 +1,713 @@
+/**
+ * @file main.cpp
+ * @brief Firmware principal pour Cobalt Voice - Enregistreur vocal minimaliste
+ *
+ * Plateforme: XIAO nRF52840 Sense (Seeed Studio)
+ * Framework: Arduino avec PlatformIO
+ *
+ * Fonctionnalités:
+ * - Enregistrement Push-to-Talk avec compression ADPCM
+ * - Transfert audio via BLE (service custom)
+ * - Gestion d'énergie agressive (System ON Sleep)
+ * - Protection batterie LiPo (shutdown à 3.2V)
+ */
+
+#include <Arduino.h>
+#include "config.h"
+#include "power_manager.h"
+#include "adpcm_codec.h"
+#include "pdm_audio.h"
+#include "audio_storage.h"
+#include "ble_services.h"
+#include "led_controller.h"
+
+// =============================================================================
+// VARIABLES GLOBALES
+// =============================================================================
+
+// État système
+volatile SystemState_t currentState = STATE_IDLE;
+volatile SystemState_t previousState = STATE_IDLE;
+volatile ErrorCode_t lastError = CV_ERROR_NONE;
+
+// Gestion du bouton
+volatile bool buttonPressed = false;
+volatile uint32_t buttonPressTime = 0;
+volatile uint32_t buttonReleaseTime = 0;
+const uint32_t DEBOUNCE_MS = 50;
+
+// Compteurs audio
+volatile uint32_t totalPcmSamples = 0;
+AdpcmState_t initialAdpcmState;
+
+// Timing
+uint32_t lastActivityTime = 0;
+uint32_t lastBatteryCheck = 0;
+
+// Buffer temporaire pour encodage ADPCM
+uint8_t adpcmBuffer[PDM_BUFFER_SIZE / 4 + 4];  // PCM/4 pour ADPCM 4-bit
+
+// =============================================================================
+// PROTOTYPES
+// =============================================================================
+
+void buttonISR();
+void onAudioBufferReady(int16_t* buffer, uint32_t samples);
+void onTransferComplete(bool success);
+void onBleCommand(const uint8_t* data, uint16_t len);
+void enterState(SystemState_t newState);
+void startRecording();
+void stopRecording();
+void startTransfer();
+void handleCriticalBattery();
+void processSerialCommands();
+
+// =============================================================================
+// INTERRUPTION BOUTON
+// =============================================================================
+
+void buttonISR() {
+    static uint32_t lastInterrupt = 0;
+    uint32_t now = millis();
+
+    // Anti-rebond
+    if (now - lastInterrupt < DEBOUNCE_MS) return;
+    lastInterrupt = now;
+
+    bool pressed = (digitalRead(PIN_BUTTON) == (BUTTON_ACTIVE_LOW ? LOW : HIGH));
+
+    if (pressed && !buttonPressed) {
+        buttonPressed = true;
+        buttonPressTime = now;
+    } else if (!pressed && buttonPressed) {
+        buttonPressed = false;
+        buttonReleaseTime = now;
+    }
+}
+
+// =============================================================================
+// CALLBACK AUDIO PDM
+// =============================================================================
+
+void onAudioBufferReady(int16_t* buffer, uint32_t samples) {
+    // Appelé quand un buffer PDM est prêt
+    // Encode en ADPCM et stocke
+
+    if (currentState != STATE_RECORDING) return;
+
+    // Encode le buffer PCM en ADPCM
+    uint32_t adpcmBytes = adpcmCodec.encode(buffer, samples, adpcmBuffer);
+
+    // Écrit dans le stockage
+    uint32_t written = audioStorage.write(adpcmBuffer, adpcmBytes);
+
+    if (written < adpcmBytes) {
+        // Storage plein!
+        lastError = CV_ERROR_STORAGE_FULL;
+        DEBUG_PRINTLN("[MAIN] Storage full!");
+    }
+
+    totalPcmSamples += samples;
+}
+
+// =============================================================================
+// CALLBACK TRANSFERT BLE
+// =============================================================================
+
+void onTransferComplete(bool success) {
+    DEBUG_PRINTF("[MAIN] Transfer %s\n", success ? "successful" : "failed");
+
+    if (success) {
+        // Nettoie le stockage après transfert réussi
+        audioStorage.clear();
+    }
+
+    // Retourne en veille
+    currentState = STATE_IDLE;
+}
+
+// =============================================================================
+// CALLBACK COMMANDE BLE
+// =============================================================================
+
+void onBleCommand(const uint8_t* data, uint16_t len) {
+    if (len == 0) return;
+
+    // Commandes simples:
+    // 'S' = Status request
+    // 'C' = Cancel transfer
+    // 'D' = Delete recording
+
+    char cmd = (char)data[0];
+
+    switch (cmd) {
+        case 'S':
+            DEBUG_PRINTLN("[BLE] Status requested");
+            // TODO: Envoyer status
+            break;
+
+        case 'C':
+            DEBUG_PRINTLN("[BLE] Cancel requested");
+            if (currentState == STATE_TRANSFERRING) {
+                bleServices.cancelTransfer();
+                currentState = STATE_IDLE;
+            }
+            break;
+
+        case 'D':
+            DEBUG_PRINTLN("[BLE] Delete requested");
+            audioStorage.clear();
+            break;
+
+        default:
+            DEBUG_PRINTF("[BLE] Unknown command: 0x%02X\n", cmd);
+            break;
+    }
+}
+
+// =============================================================================
+// MACHINE D'ÉTAT
+// =============================================================================
+
+void enterState(SystemState_t newState) {
+    if (newState == currentState) return;
+
+    previousState = currentState;
+    currentState = newState;
+
+    DEBUG_PRINTF("[STATE] %d -> %d\n", previousState, newState);
+
+    switch (newState) {
+        case STATE_IDLE:
+            ledController.setIdle();
+            pdmAudio.stopCapture();
+            bleServices.cancelTransfer();
+            break;
+
+        case STATE_RECORDING:
+            ledController.setRecording();
+            startRecording();
+            break;
+
+        case STATE_TRANSFERRING:
+            ledController.setTransferring();
+            startTransfer();
+            break;
+
+        case STATE_LOW_BATTERY:
+            ledController.setLowBattery();
+            break;
+
+        case STATE_CHARGING:
+            ledController.setCharging();
+            break;
+
+        case STATE_ERROR:
+            ledController.setError();
+            break;
+
+        case STATE_SHUTDOWN:
+            handleCriticalBattery();
+            break;
+    }
+
+    lastActivityTime = millis();
+}
+
+// =============================================================================
+// FONCTIONS D'ENREGISTREMENT
+// =============================================================================
+
+void startRecording() {
+    DEBUG_PRINTLN("[MAIN] Starting recording...");
+
+    // Reset le codec ADPCM
+    adpcmCodec.reset();
+    initialAdpcmState = adpcmCodec.getState();
+    totalPcmSamples = 0;
+
+    // Prépare le stockage
+    if (!audioStorage.startRecording()) {
+        lastError = CV_ERROR_STORAGE_FULL;
+        enterState(STATE_ERROR);
+        return;
+    }
+
+    // Démarre la capture PDM
+    if (!pdmAudio.startCapture()) {
+        lastError = CV_ERROR_PDM_INIT;
+        enterState(STATE_ERROR);
+        return;
+    }
+
+    DEBUG_PRINTLN("[MAIN] Recording started successfully");
+}
+
+void stopRecording() {
+    DEBUG_PRINTLN("[MAIN] Stopping recording...");
+
+    // Arrête la capture
+    pdmAudio.stopCapture();
+
+    // Finalise le stockage
+    audioStorage.finalizeRecording(
+        totalPcmSamples,
+        initialAdpcmState.prevSample,
+        initialAdpcmState.stepIndex
+    );
+
+    DEBUG_PRINTF("[MAIN] Recording stopped: %lu samples, %lu bytes\n",
+                 totalPcmSamples, audioStorage.getAudioDataSize());
+
+    // Vérifie s'il y a des données à transférer
+    if (audioStorage.hasRecording() && audioStorage.getAudioDataSize() > 0) {
+        // Lance le transfert BLE
+        enterState(STATE_TRANSFERRING);
+    } else {
+        enterState(STATE_IDLE);
+    }
+}
+
+// =============================================================================
+// FONCTIONS DE TRANSFERT
+// =============================================================================
+
+void startTransfer() {
+    DEBUG_PRINTLN("[MAIN] Starting BLE transfer...");
+
+    if (!bleServices.isConnected()) {
+        DEBUG_PRINTLN("[MAIN] Not connected, starting advertising...");
+        bleServices.startAdvertising();
+        // Le transfert démarrera quand connecté
+        return;
+    }
+
+    // Prépare le transfert
+    // On envoie le header + les données en séquence
+    uint32_t totalSize = audioStorage.getTotalSize();
+
+    // Crée un buffer continu avec header + données
+    // Note: Pour de gros fichiers, il faudrait streamer depuis le stockage
+    static uint8_t transferBuffer[AUDIO_HEADER_SIZE + AUDIO_BUFFER_SIZE];
+
+    // Copie le header
+    memcpy(transferBuffer, audioStorage.getHeader(), AUDIO_HEADER_SIZE);
+
+    // Copie les données
+    memcpy(transferBuffer + AUDIO_HEADER_SIZE,
+           audioStorage.getDataPointer(),
+           audioStorage.getAudioDataSize());
+
+    // Démarre le transfert
+    if (!bleServices.startAudioTransfer(transferBuffer, totalSize)) {
+        DEBUG_PRINTLN("[MAIN] Failed to start transfer");
+        enterState(STATE_IDLE);
+    }
+}
+
+// =============================================================================
+// GESTION BATTERIE CRITIQUE
+// =============================================================================
+
+void handleCriticalBattery() {
+    DEBUG_PRINTLN("[MAIN] !!! CRITICAL BATTERY - SHUTTING DOWN !!!");
+
+    // Flash rouge rapide pour avertir
+    for (int i = 0; i < 5; i++) {
+        ledController.setColorImmediate(LED_COLOR_RED);
+        delay(100);
+        ledController.off();
+        delay(100);
+    }
+
+    // Sauvegarde d'urgence si enregistrement en cours
+    if (currentState == STATE_RECORDING) {
+        pdmAudio.stopCapture();
+        audioStorage.finalizeRecording(totalPcmSamples,
+                                       initialAdpcmState.prevSample,
+                                       initialAdpcmState.stepIndex);
+    }
+
+    // Désactive tout
+    bleServices.disable();
+    ledController.off();
+
+    // Entre en deep sleep
+    powerManager.enterDeepSleep();
+    // Ne revient jamais de cette fonction
+}
+
+// =============================================================================
+// SETUP
+// =============================================================================
+
+void setup() {
+    // LED en premier pour feedback visuel AVANT tout le reste
+    pinMode(PIN_LED_RED, OUTPUT);
+    pinMode(PIN_LED_GREEN, OUTPUT);
+    pinMode(PIN_LED_BLUE, OUTPUT);
+
+    // Séquence de démarrage: Rainbow pour montrer que le firmware démarre
+    // Rouge
+    digitalWrite(PIN_LED_RED, LOW); digitalWrite(PIN_LED_GREEN, HIGH); digitalWrite(PIN_LED_BLUE, HIGH);
+    delay(200);
+    // Vert
+    digitalWrite(PIN_LED_RED, HIGH); digitalWrite(PIN_LED_GREEN, LOW); digitalWrite(PIN_LED_BLUE, HIGH);
+    delay(200);
+    // Bleu
+    digitalWrite(PIN_LED_RED, HIGH); digitalWrite(PIN_LED_GREEN, HIGH); digitalWrite(PIN_LED_BLUE, LOW);
+    delay(200);
+    // Blanc (tout allumé) = initialisation en cours
+    digitalWrite(PIN_LED_RED, LOW); digitalWrite(PIN_LED_GREEN, LOW); digitalWrite(PIN_LED_BLUE, LOW);
+
+    // =====================================================================
+    // IMPORTANT: NE PAS initialiser Serial avant Bluefruit.begin()!
+    // Bluefruit reconfigure l'USB, ce qui casse Serial si déjà initialisé.
+    // On initialise d'abord TOUS les modules, puis Serial en dernier.
+    // =====================================================================
+
+    // LED controller (reprend le contrôle des LEDs)
+    ledController.begin();
+    ledController.setColorImmediate(LED_COLOR_CYAN);  // Cyan = init modules
+
+    // BLE EN PREMIER - car il configure l'USB
+    bleServices.begin();
+    bleServices.setTransferCompleteCallback(onTransferComplete);
+    bleServices.setCommandCallback(onBleCommand);
+
+    // Maintenant on peut initialiser Serial (après Bluefruit.begin())
+#if DEBUG_SERIAL
+    delay(200);  // Laisse l'USB se stabiliser après Bluefruit
+    Serial.begin(DEBUG_BAUD_RATE);
+
+    // Attend que le port série soit prêt (max 3 secondes)
+    uint32_t serialTimeout = millis();
+    while (!Serial && (millis() - serialTimeout < 3000)) {
+        delay(10);
+    }
+
+    delay(300);  // Délai supplémentaire pour stabilité
+
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("       COBALT VOICE FIRMWARE");
+    Serial.println("         v1.0 - Starting...");
+    Serial.println("========================================");
+    Serial.println();
+    Serial.flush();
+#endif
+
+    DEBUG_PRINTLN("[INIT] Serial OK après Bluefruit.begin()");
+    DEBUG_PRINTLN("[INIT] Initializing other modules...");
+
+    // Power manager
+    powerManager.begin();
+
+    // Vérifie la batterie immédiatement
+    if (powerManager.isBatteryCritical()) {
+        handleCriticalBattery();
+        return;  // Ne revient pas
+    }
+
+    // Codec ADPCM
+    adpcmCodec.begin();
+
+    // Stockage
+    audioStorage.begin();
+
+    // Audio PDM
+    pdmAudio.begin();
+    pdmAudio.setBufferReadyCallback(onAudioBufferReady);
+
+    // Démarre advertising BLE maintenant
+    bleServices.startAdvertising();
+
+    // Configure le bouton
+    pinMode(PIN_BUTTON, BUTTON_ACTIVE_LOW ? INPUT_PULLUP : INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), buttonISR, CHANGE);
+
+    // Configure le réveil
+    powerManager.configureWakeupPin(PIN_BUTTON, BUTTON_ACTIVE_LOW ? LOW : HIGH);
+
+    // Indique batterie faible si nécessaire
+    if (powerManager.isBatteryLow()) {
+        ledController.setLowBattery();
+        delay(LED_BRIEF_FLASH_MS + 100);
+    }
+
+    // État initial
+    if (powerManager.isCharging()) {
+        enterState(STATE_CHARGING);
+    } else {
+        enterState(STATE_IDLE);
+    }
+
+    // Met à jour le niveau de batterie BLE
+    bleServices.updateBatteryLevel(powerManager.getLastPercent());
+
+    lastActivityTime = millis();
+    lastBatteryCheck = millis();
+
+    // Séquence finale: 3 flashs verts = tout OK
+    for (int i = 0; i < 3; i++) {
+        ledController.setColorImmediate(LED_COLOR_GREEN);
+        delay(100);
+        ledController.off();
+        delay(100);
+    }
+
+    DEBUG_PRINTLN("");
+    DEBUG_PRINTLN("========================================");
+    DEBUG_PRINTLN("    INITIALISATION TERMINÉE !");
+    DEBUG_PRINTLN("========================================");
+    DEBUG_PRINTF("État initial: %s\n", currentState == STATE_CHARGING ? "CHARGING" : "IDLE");
+    DEBUG_PRINTF("Batterie: %d%%\n", powerManager.getLastPercent());
+    DEBUG_PRINTF("BLE: advertising...\n");
+    DEBUG_PRINTLN("");
+    DEBUG_PRINTLN("Prêt! Appuyez sur le bouton pour enregistrer.");
+    DEBUG_PRINTLN("Tapez 'h' pour l'aide.\n");
+
+#if DEBUG_SERIAL
+    Serial.flush();  // Force l'envoi de tous les messages
+#endif
+}
+
+// =============================================================================
+// LOOP PRINCIPAL
+// =============================================================================
+
+// =============================================================================
+// COMMANDES SÉRIE DEBUG
+// =============================================================================
+
+void processSerialCommands() {
+#if DEBUG_SERIAL
+    if (Serial.available()) {
+        char cmd = Serial.read();
+
+        switch (cmd) {
+            case 'h':
+            case 'H':
+            case '?':
+                Serial.println("\n=== COBALT VOICE - COMMANDES ===");
+                Serial.println("h - Aide (ce menu)");
+                Serial.println("s - Status système");
+                Serial.println("b - Niveau batterie");
+                Serial.println("l - Test LEDs");
+                Serial.println("r - Simuler enregistrement (2s)");
+                Serial.println("c - Connexions BLE");
+                Serial.println("================================\n");
+                break;
+
+            case 's':
+            case 'S':
+                Serial.println("\n=== STATUS ===");
+                Serial.printf("État: %d\n", currentState);
+                Serial.printf("Erreur: %d\n", lastError);
+                Serial.printf("Bouton: %s\n", buttonPressed ? "APPUYÉ" : "relâché");
+                Serial.printf("Uptime: %lu ms\n", millis());
+                Serial.printf("Audio stocké: %lu bytes\n", audioStorage.getAudioDataSize());
+                Serial.println();
+                break;
+
+            case 'b':
+            case 'B':
+                Serial.println("\n=== BATTERIE ===");
+                Serial.printf("Tension: %.2f V\n", powerManager.getLastVoltage());
+                Serial.printf("Niveau: %d%%\n", powerManager.getLastPercent());
+                Serial.printf("En charge: %s\n", powerManager.isCharging() ? "OUI" : "NON");
+                Serial.printf("Faible: %s\n", powerManager.isBatteryLow() ? "OUI" : "NON");
+                Serial.printf("Critique: %s\n", powerManager.isBatteryCritical() ? "OUI" : "NON");
+                Serial.println();
+                break;
+
+            case 'l':
+            case 'L':
+                Serial.println("\n=== TEST LEDs ===");
+                Serial.println("Rouge...");
+                ledController.setColorImmediate(LED_COLOR_RED);
+                delay(500);
+                Serial.println("Vert...");
+                ledController.setColorImmediate(LED_COLOR_GREEN);
+                delay(500);
+                Serial.println("Bleu...");
+                ledController.setColorImmediate(LED_COLOR_BLUE);
+                delay(500);
+                Serial.println("Jaune...");
+                ledController.setColorImmediate(LED_COLOR_YELLOW);
+                delay(500);
+                Serial.println("Cyan...");
+                ledController.setColorImmediate(LED_COLOR_CYAN);
+                delay(500);
+                Serial.println("Magenta...");
+                ledController.setColorImmediate(LED_COLOR_MAGENTA);
+                delay(500);
+                Serial.println("Blanc...");
+                ledController.setColorImmediate(LED_COLOR_WHITE);
+                delay(500);
+                Serial.println("Éteint.");
+                ledController.off();
+                Serial.println("Test terminé.\n");
+                break;
+
+            case 'r':
+            case 'R':
+                Serial.println("\n=== SIMULATION ENREGISTREMENT ===");
+                if (currentState == STATE_IDLE) {
+                    enterState(STATE_RECORDING);
+                    delay(2000);
+                    stopRecording();
+                    Serial.println("Simulation terminée.\n");
+                } else {
+                    Serial.println("Erreur: pas en état IDLE\n");
+                }
+                break;
+
+            case 'c':
+            case 'C':
+                Serial.println("\n=== BLE STATUS ===");
+                Serial.printf("Connecté: %s\n", bleServices.isConnected() ? "OUI" : "NON");
+                Serial.println();
+                break;
+
+            default:
+                if (cmd != '\n' && cmd != '\r') {
+                    Serial.printf("Commande inconnue: '%c'\n", cmd);
+                }
+                break;
+        }
+    }
+#endif
+}
+
+// Variable pour heartbeat
+static uint32_t lastHeartbeat = 0;
+
+void loop() {
+    uint32_t now = millis();
+
+    // === Heartbeat toutes les 5 secondes ===
+#if DEBUG_SERIAL
+    if (now - lastHeartbeat >= 5000) {
+        lastHeartbeat = now;
+        Serial.printf("[HEARTBEAT] %lu ms - State:%d - Serial OK\n", now, currentState);
+        Serial.flush();  // Force l'envoi immédiat
+    }
+#endif
+
+    // === Traitement commandes série ===
+    processSerialCommands();
+
+    // === Mise à jour des modules ===
+    ledController.update();
+
+    // === Vérification batterie périodique ===
+    if (now - lastBatteryCheck >= BATTERY_CHECK_INTERVAL) {
+        lastBatteryCheck = now;
+
+        if (!powerManager.update()) {
+            // Batterie critique!
+            enterState(STATE_SHUTDOWN);
+            return;
+        }
+
+        // Met à jour le niveau BLE
+        bleServices.updateBatteryLevel(powerManager.getLastPercent());
+
+        // Vérifie l'état de charge
+        if (powerManager.isCharging() && currentState == STATE_IDLE) {
+            enterState(STATE_CHARGING);
+        } else if (!powerManager.isCharging() && currentState == STATE_CHARGING) {
+            enterState(STATE_IDLE);
+        }
+    }
+
+    // === Machine d'état ===
+    switch (currentState) {
+        case STATE_IDLE:
+        case STATE_CHARGING:
+            // Attend un appui bouton
+            if (buttonPressed && (now - buttonPressTime >= DEBOUNCE_MS)) {
+                enterState(STATE_RECORDING);
+            }
+
+            // Mise en veille après inactivité
+            if (now - lastActivityTime >= SLEEP_TIMEOUT_MS) {
+                if (!bleServices.isConnected() && !powerManager.isCharging()) {
+                    DEBUG_PRINTLN("[MAIN] Entering sleep...");
+                    powerManager.enterLightSleep();
+                    lastActivityTime = millis();  // Reset après réveil
+                }
+            }
+            break;
+
+        case STATE_RECORDING: {
+            // Traite les buffers audio
+            pdmAudio.processBuffers();
+
+            // Vérifie les erreurs
+            if (pdmAudio.hasError()) {
+                lastError = CV_ERROR_PDM_OVERFLOW;
+                DEBUG_PRINTLN("[MAIN] PDM overflow detected!");
+                pdmAudio.clearError();
+            }
+
+            // Vérifie si le bouton est relâché
+            if (!buttonPressed && buttonReleaseTime > buttonPressTime) {
+                stopRecording();
+            }
+
+            // Vérifie la limite de temps
+            uint32_t recordingTime = (totalPcmSamples * 1000UL) / AUDIO_SAMPLE_RATE;
+            if (recordingTime >= MAX_RECORDING_SECONDS * 1000UL) {
+                DEBUG_PRINTLN("[MAIN] Max recording time reached");
+                stopRecording();
+            }
+
+            // Vérifie le stockage
+            if (audioStorage.isFull()) {
+                lastError = CV_ERROR_STORAGE_FULL;
+                stopRecording();
+            }
+            break;
+        }
+
+        case STATE_TRANSFERRING:
+            // Continue le transfert BLE
+            if (!bleServices.continueTransfer()) {
+                // Transfert terminé ou échoué
+                // Le callback gère le changement d'état
+            }
+
+            // Vérifie la connexion
+            if (!bleServices.isConnected()) {
+                // Attend une reconnexion
+                bleServices.startAdvertising();
+            }
+            break;
+
+        case STATE_LOW_BATTERY:
+            // Affiche le warning puis retourne en idle
+            if (ledController.getCurrentMode() == LED_MODE_OFF) {
+                enterState(STATE_IDLE);
+            }
+            break;
+
+        case STATE_ERROR:
+            // Clignote en blanc jusqu'à ce que le bouton soit pressé
+            if (buttonPressed) {
+                lastError = CV_ERROR_NONE;
+                enterState(STATE_IDLE);
+            }
+            break;
+
+        case STATE_SHUTDOWN:
+            // Ne devrait pas arriver ici
+            handleCriticalBattery();
+            break;
+    }
+
+    // === Yield pour la SoftDevice BLE ===
+    // Permet au scheduler BLE de s'exécuter
+    yield();
+}

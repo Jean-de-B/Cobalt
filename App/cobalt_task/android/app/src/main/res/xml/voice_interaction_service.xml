@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.example.cobalt_task.CobaltVoiceInteractionSessionService"
+    android:recognitionService="com.example.cobalt_task.CobaltRecognitionService"
+    android:settingsActivity="com.example.cobalt_task.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="true" />
