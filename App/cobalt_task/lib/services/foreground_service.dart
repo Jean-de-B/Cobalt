@@ -185,7 +185,7 @@ class CobaltForegroundService {
 
     final success = await FlutterForegroundTask.startService(
       notificationTitle: 'Cobalt Task',
-      notificationText: 'En écoute...',
+      notificationText: '',
       callback: startCallback,
     );
 
@@ -196,7 +196,7 @@ class CobaltForegroundService {
 
       // Remplacer la notification du plugin par notre version native
       // avec le bouton micro garanti visible sur Samsung
-      await _showNativeMicNotification('Cobalt Task', 'En écoute...', false);
+      await _showNativeMicNotification('Cobalt Task', '', false);
     } else {
       // ignore: avoid_print
       print('[ForegroundService] ÉCHEC du démarrage du service');
@@ -244,7 +244,7 @@ class CobaltForegroundService {
     Future.delayed(const Duration(seconds: 3), () {
       updateNotification(
         title: 'Cobalt Task',
-        text: 'En écoute...',
+        text: '',
       );
     });
   }

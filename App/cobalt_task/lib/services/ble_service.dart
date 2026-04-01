@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/app_constants.dart';
 
 /// =============================================================================
@@ -28,6 +29,12 @@ class BleService {
   /// Appareil connecté
   BluetoothDevice? _connectedDevice;
 
+  /// ID (MAC) de l'appareil sélectionné par l'utilisateur (persisté)
+  String? _selectedDeviceId;
+
+  /// Nom de l'appareil connecté (pour affichage UI)
+  String? _connectedDeviceName;
+
   /// Caractéristique TX pour recevoir les données audio
   BluetoothCharacteristic? _txCharacteristic;
 
@@ -42,6 +49,13 @@ class BleService {
 
   /// Caractéristique du niveau de batterie
   BluetoothCharacteristic? _batteryCharacteristic;
+
+  /// Caractéristique de la version firmware
+  BluetoothCharacteristic? _fwVersionCharacteristic;
+
+  /// Version firmware de l'appareil connecté (ex: "1.0.0")
+  String? _firmwareVersion;
+  String? get firmwareVersion => _firmwareVersion;
 
   /// État actuel de la connexion
   BleConnectionState _connectionState = BleConnectionState.disconnected;
@@ -75,8 +89,10 @@ class BleService {
   /// Timer de reconnexion
   Timer? _reconnectTimer;
 
-  /// Délais de reconnexion progressifs (backoff en secondes)
-  static const List<int> _reconnectDelays = [1, 3, 5, 10, 30];
+  /// Subscription à l'état de l'adaptateur BT (pour react au BT on/off)
+  StreamSubscription? _btStateSubscription;
+
+  // Reconnexion : scan continu de 15s en boucle jusqu'à retrouver le device
 
   /// Liste des appareils découverts pendant le scan
   final List<ScanResult> _discoveredDevices = [];
@@ -135,12 +151,45 @@ class BleService {
   // ---------------------------------------------------------------------------
 
   /// Constructeur privé
-  BleService._internal();
+  BleService._internal() {
+    _loadSelectedDeviceId();
+  }
 
   /// Factory Singleton
   factory BleService() {
     _instance ??= BleService._internal();
     return _instance!;
+  }
+
+  /// Charge le device ID sélectionné depuis SharedPreferences
+  Future<void> _loadSelectedDeviceId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _selectedDeviceId = prefs.getString(_prefKeySelectedDeviceId);
+      if (_selectedDeviceId != null) {
+        // ignore: avoid_print
+        print('BLE: Device ID restauré: $_selectedDeviceId');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('BLE: Erreur chargement device ID: $e');
+    }
+  }
+
+  /// Persiste le device ID sélectionné
+  Future<void> _saveSelectedDeviceId(String? deviceId) async {
+    _selectedDeviceId = deviceId;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (deviceId != null) {
+        await prefs.setString(_prefKeySelectedDeviceId, deviceId);
+      } else {
+        await prefs.remove(_prefKeySelectedDeviceId);
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('BLE: Erreur sauvegarde device ID: $e');
+    }
   }
 
   /// Getter pour l'état actuel
@@ -149,6 +198,12 @@ class BleService {
   /// Getter pour vérifier si connecté
   bool get isConnected => _connectionState == BleConnectionState.connected ||
       _connectionState == BleConnectionState.syncing;
+
+  /// Nom de l'appareil connecté (ex: "Cobalt A3F2")
+  String? get connectedDeviceName => _connectedDeviceName;
+
+  /// Clé SharedPreferences pour persister le device ID sélectionné
+  static const String _prefKeySelectedDeviceId = 'ble_selected_device_id';
 
   // ---------------------------------------------------------------------------
   // INITIALISATION ET VÉRIFICATION BLUETOOTH
@@ -186,10 +241,12 @@ class BleService {
   /// Si [autoConnect] est true, se connecte automatiquement au premier
   /// appareil trouvé (mode démarrage). Sinon, collecte les appareils
   /// pour le device picker (mode manuel).
-  Future<void> startScan({int timeout = 10, bool autoConnect = false}) async {
+  Future<void> startScan({int timeout = 10, bool autoConnect = false, bool isReconnectScan = false}) async {
     // Réactiver la reconnexion automatique quand l'utilisateur lance un scan
     _autoReconnectEnabled = true;
-    _reconnectAttempts = 0;
+    if (!isReconnectScan) {
+      _reconnectAttempts = 0;
+    }
 
     // Vérifier le Bluetooth
     if (!await isBluetoothAvailable()) {
@@ -227,11 +284,18 @@ class BleService {
             // ignore: avoid_print
             print('BLE Scan: trouvé "$deviceName"');
 
-            // Auto-connect: se connecter au premier appareil trouvé
+            // Auto-connect: se connecter au bon appareil
             if (autoConnect) {
+              // Si on a un device ID mémorisé, ne reconnecter qu'à celui-ci
+              if (_selectedDeviceId != null &&
+                  result.device.remoteId.str != _selectedDeviceId) {
+                // ignore: avoid_print
+                print('BLE: Auto-connect ignoré "$deviceName" (attendu: $_selectedDeviceId)');
+                continue;
+              }
               // ignore: avoid_print
-              print('BLE: Auto-connect au premier appareil trouvé');
-              connectToDevice(result.device);
+              print('BLE: Auto-connect à "$deviceName" (${result.device.remoteId})');
+              connectToDevice(result.device, deviceName: deviceName);
               return;
             }
           }
@@ -259,11 +323,103 @@ class BleService {
     }
   }
 
-  /// Connecte un appareil spécifique choisi par l'utilisateur
-  Future<void> connectToDevice(BluetoothDevice device) async {
+  /// Scan de navigation rapide pour le device picker.
+  /// Affiche TOUS les devices BLE nommés, pas seulement Cobalt Voice.
+  /// Pas d'auto-connect, rafraîchit les RSSI, tourne jusqu'à stopBrowseScan().
+  Future<void> startBrowseScan() async {
+    if (!await isBluetoothAvailable()) {
+      // ignore: avoid_print
+      print('BLE Browse: Bluetooth non disponible');
+      return;
+    }
+
+    await FlutterBluePlus.stopScan();
+    _discoveredDevices.clear();
+    _discoveredDevicesController.add([]);
+
+    _scanSubscription?.cancel();
+    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      bool changed = false;
+      for (final result in results) {
+        final advName = result.advertisementData.advName;
+        final platformName = result.device.platformName;
+        final deviceName = advName.isNotEmpty ? advName : platformName;
+
+        // Accepter tout device avec un nom (pas de filtre "Cobalt Voice")
+        if (deviceName.isNotEmpty) {
+          final idx = _discoveredDevices.indexWhere(
+              (d) => d.device.remoteId == result.device.remoteId);
+          if (idx >= 0) {
+            _discoveredDevices[idx] = result; // rafraîchit RSSI
+          } else {
+            _discoveredDevices.add(result);
+          }
+          changed = true;
+        }
+      }
+      if (changed) {
+        // Trier : Cobalt Voice en premier, puis par RSSI
+        _discoveredDevices.sort((a, b) {
+          final aName = (a.advertisementData.advName.isNotEmpty
+              ? a.advertisementData.advName : a.device.platformName).toLowerCase();
+          final bName = (b.advertisementData.advName.isNotEmpty
+              ? b.advertisementData.advName : b.device.platformName).toLowerCase();
+          final aIsCobalt = aName.startsWith(BleConstants.deviceNamePrefix.toLowerCase());
+          final bIsCobalt = bName.startsWith(BleConstants.deviceNamePrefix.toLowerCase());
+          if (aIsCobalt && !bIsCobalt) return -1;
+          if (!aIsCobalt && bIsCobalt) return 1;
+          return b.rssi.compareTo(a.rssi); // plus fort signal en premier
+        });
+        _discoveredDevicesController.add(List.from(_discoveredDevices));
+      }
+    });
+
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 30),
+      androidUsesFineLocation: true,
+      continuousUpdates: true,
+    );
+  }
+
+  /// Arrête le scan de navigation.
+  Future<void> stopBrowseScan() async {
+    await FlutterBluePlus.stopScan();
+    _scanSubscription?.cancel();
+  }
+
+  /// Connecte un appareil spécifique choisi par l'utilisateur.
+  /// Déconnecte proprement l'ancien appareil si différent.
+  Future<void> connectToDevice(BluetoothDevice device, {String? deviceName}) async {
     // Arrêter le scan en cours
     await FlutterBluePlus.stopScan();
     _scanSubscription?.cancel();
+
+    // Déconnecter l'ancien appareil si on change de device
+    if (_connectedDevice != null &&
+        _connectedDevice!.remoteId != device.remoteId) {
+      // ignore: avoid_print
+      print('BLE: Déconnexion de l\'ancien appareil ${_connectedDevice!.remoteId}');
+      try {
+        _connectionSubscription?.cancel();
+        _notificationSubscription?.cancel();
+        _batterySubscription?.cancel();
+        _buttonSubscription?.cancel();
+        await _connectedDevice!.disconnect();
+      } catch (e) {
+        // ignore: avoid_print
+        print('BLE: Erreur déconnexion ancien appareil: $e');
+      }
+      _connectedDevice = null;
+      _txCharacteristic = null;
+      _rxCharacteristic = null;
+      _buttonCharacteristic = null;
+      _batteryCharacteristic = null;
+    }
+
+    // Mémoriser le device ID sélectionné (persisté pour auto-reconnect)
+    await _saveSelectedDeviceId(device.remoteId.str);
+    _connectedDeviceName = deviceName ?? device.platformName;
+
     // Lancer la connexion
     await _connectToDevice(device);
   }
@@ -294,24 +450,24 @@ class BleService {
       print('BLE: Connecté!');
 
       _connectedDevice = device;
+      _connectedDeviceName ??= device.platformName;
 
-      // Négocier le MTU optimal
+      // Le firmware gère conn params, PHY, DLE, MTU de façon non-bloquante.
+      // Côté app : on enchaîne directement discover → subscribe → read.
+      // Le MTU est négocié automatiquement par le stack Android lors du connect.
+
+      // Négocier le MTU si pas encore fait par le stack
       await _negotiateMtu(device);
-      // Yield : laisser le main thread Android traiter les events en attente
-      // (chaque opération BLE utilise le main thread via MethodChannel)
-      await Future<void>.delayed(const Duration(milliseconds: 500));
 
-      // Découvrir les services et caractéristiques
+      // Découvrir les services
       await _discoverServices(device);
-      await Future<void>.delayed(const Duration(milliseconds: 500));
 
       // Souscrire aux notifications
       await _subscribeToNotifications();
-      await Future<void>.delayed(const Duration(milliseconds: 500));
 
-      // Lire le niveau de batterie si disponible
+      // Lire batterie et firmware version
       await readBatteryLevel();
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await readFirmwareVersion();
 
       // ignore: avoid_print
       print('BLE: Configuration terminée, état -> connected');
@@ -327,21 +483,24 @@ class BleService {
   /// Négocie le MTU et la priorité de connexion
   Future<void> _negotiateMtu(BluetoothDevice device) async {
     try {
-      // Demander le MTU maximum - le firmware répondra avec ce qu'il supporte
-      final mtu = await device.requestMtu(BleConstants.preferredMtu);
-      // ignore: avoid_print
-      print('BLE: MTU négocié: $mtu bytes');
+      // Le stack BLE négocie souvent le MTU automatiquement à la connexion.
+      // On vérifie d'abord si c'est déjà fait pour éviter une double négociation.
+      final currentMtu = device.mtuNow;
+      if (currentMtu >= BleConstants.preferredMtu) {
+        // ignore: avoid_print
+        print('BLE: MTU déjà négocié: $currentMtu bytes (skip requestMtu)');
+      } else {
+        final mtu = await device.requestMtu(BleConstants.preferredMtu);
+        // ignore: avoid_print
+        print('BLE: MTU négocié: $mtu bytes');
+      }
 
-      // Priorité BALANCED par défaut (meilleure portée, économie batterie)
-      // On passe en HIGH uniquement pendant les transferts de données
       await device.requestConnectionPriority(
         connectionPriorityRequest: ConnectionPriority.balanced,
       );
-      // ignore: avoid_print
-      print('BLE: Priorité connexion BALANCED (intervalles 20-100ms)');
     } catch (e) {
       // ignore: avoid_print
-      print('BLE: Erreur négociation MTU/priorité: $e');
+      print('BLE: Erreur négociation MTU/priorité: $e (on continue)');
     }
   }
 
@@ -418,6 +577,13 @@ class BleService {
             _buttonCharacteristic = characteristic;
             // ignore: avoid_print
             print('BLE:   -> Button Event trouvée!');
+          }
+
+          // Caractéristique Firmware Version (lecture)
+          if (charUuid == BleConstants.fwVersionCharacteristicUuid.toLowerCase()) {
+            _fwVersionCharacteristic = characteristic;
+            // ignore: avoid_print
+            print('BLE:   -> Firmware Version trouvée!');
           }
         }
       }
@@ -522,6 +688,141 @@ class BleService {
       // ignore: avoid_print
       print('BLE: Erreur lecture batterie: $e');
     }
+  }
+
+  /// Lit la version firmware de l'appareil connecté
+  Future<void> readFirmwareVersion() async {
+    if (_fwVersionCharacteristic == null) {
+      _firmwareVersion = null;
+      return;
+    }
+
+    try {
+      final value = await _fwVersionCharacteristic!.read();
+      if (value.length >= 3) {
+        _firmwareVersion = '${value[0]}.${value[1]}.${value[2]}';
+        // ignore: avoid_print
+        print('BLE: Firmware version = $_firmwareVersion');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('BLE: Erreur lecture firmware version: $e');
+    }
+  }
+
+  /// Envoie la commande DFU pour faire entrer l'appareil en mode bootloader
+  /// Retourne true si la commande a été envoyée
+  Future<bool> triggerDfuMode() async {
+    if (_rxCharacteristic == null || !isConnected) {
+      // ignore: avoid_print
+      print('BLE DFU: Non connecté ou RX non disponible');
+      return false;
+    }
+
+    final deviceAddress = _connectedDevice!.remoteId.str;
+    // ignore: avoid_print
+    print('BLE DFU: Envoi commande DFU (0xFD) à $deviceAddress');
+
+    // Désactiver la reconnexion automatique pendant le DFU
+    _autoReconnectEnabled = false;
+    _reconnectTimer?.cancel();
+
+    try {
+      await _rxCharacteristic!.write(
+        [BleConstants.cmdEnterDfu],
+        withoutResponse: true,
+      );
+      // ignore: avoid_print
+      print('BLE DFU: Commande envoyée, device va redémarrer en mode DFU');
+      return true;
+    } catch (e) {
+      // ignore: avoid_print
+      print('BLE DFU: Erreur envoi commande: $e');
+      _autoReconnectEnabled = true;
+      return false;
+    }
+  }
+
+  /// Scanne pour trouver le device en mode DFU (bootloader Adafruit = "DfuTarg")
+  /// Retourne l'adresse MAC du DFU target, ou null si non trouvé
+  ///
+  /// Détection par nom ("DfuTarg", "Dfu") OU par service UUID Nordic DFU (0xFE59)
+  Future<String?> scanForDfuTarget({int timeoutSeconds = 20}) async {
+    // ignore: avoid_print
+    print('BLE DFU: Scan pour DfuTarg (timeout: ${timeoutSeconds}s)...');
+
+    await FlutterBluePlus.stopScan();
+
+    // UUID du service Nordic Secure DFU
+    const nordicDfuServiceUuid = 'fe59';
+
+    final completer = Completer<String?>();
+    StreamSubscription? sub;
+    Timer? timeout;
+    final Set<String> loggedDevices = {};
+
+    sub = FlutterBluePlus.scanResults.listen((results) {
+      for (final result in results) {
+        final addr = result.device.remoteId.str;
+        final advName = result.advertisementData.advName;
+        final platformName = result.device.platformName;
+        final name = advName.isNotEmpty ? advName : platformName;
+        final serviceUuids = result.advertisementData.serviceUuids
+            .map((e) => e.toString().toLowerCase())
+            .toList();
+
+        // Log TOUS les devices trouvés (une seule fois par adresse)
+        if (!loggedDevices.contains(addr)) {
+          loggedDevices.add(addr);
+          // ignore: avoid_print
+          print('BLE DFU SCAN: "$name" @ $addr  services=$serviceUuids  rssi=${result.rssi}');
+        }
+
+        // Critère 1: Nom contient "dfu" (DfuTarg, etc.)
+        final nameMatch = name.isNotEmpty &&
+            (name.toLowerCase().contains('dfutarg') ||
+             name.toLowerCase().contains('dfu'));
+
+        // Critère 2: Advertise le service Nordic DFU (0xFE59)
+        final serviceMatch = serviceUuids.any((uuid) =>
+            uuid.contains(nordicDfuServiceUuid));
+
+        if (nameMatch || serviceMatch) {
+          // ignore: avoid_print
+          print('BLE DFU: *** DFU TARGET TROUVÉ! ***  "$name" @ $addr  '
+              '(name=${nameMatch ? "OUI" : "non"}, service=${serviceMatch ? "OUI" : "non"})');
+          if (!completer.isCompleted) {
+            completer.complete(addr);
+          }
+        }
+      }
+    });
+
+    timeout = Timer(Duration(seconds: timeoutSeconds), () {
+      if (!completer.isCompleted) {
+        // ignore: avoid_print
+        print('BLE DFU: Timeout - DfuTarg non trouvé après ${timeoutSeconds}s');
+        print('BLE DFU: ${loggedDevices.length} device(s) BLE détecté(s) au total');
+        completer.complete(null);
+      }
+    });
+
+    await FlutterBluePlus.startScan(
+      timeout: Duration(seconds: timeoutSeconds),
+      androidUsesFineLocation: true,
+    );
+
+    final address = await completer.future;
+    timeout.cancel();
+    await sub.cancel();
+    await FlutterBluePlus.stopScan();
+    return address;
+  }
+
+  /// Réactive la reconnexion automatique (après DFU terminé/annulé)
+  void enableAutoReconnect() {
+    _autoReconnectEnabled = true;
+    _reconnectAttempts = 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -654,17 +955,26 @@ class BleService {
     _buttonSubscription?.cancel();
     _buttonSubscription = null;
     _connectedDevice = null;
+    // Garder _connectedDeviceName pour l'affichage pendant la reconnexion
     _txCharacteristic = null;
     _rxCharacteristic = null;
     _buttonCharacteristic = null;
     _batteryCharacteristic = null;
+    _fwVersionCharacteristic = null;
+    _firmwareVersion = null;
     _batteryLevel = -1;
     _isCharging = false;
     _batteryLevelController.add(-1);
     _chargingController.add(false);
 
     if (_connectionState != BleConnectionState.disabled) {
-      _updateState(BleConnectionState.disconnected);
+      // Si reconnexion automatique active, rester en "scanning" (orange)
+      // au lieu de passer en "disconnected" (gris)
+      if (_autoReconnectEnabled && _selectedDeviceId != null) {
+        _updateState(BleConnectionState.scanning);
+      } else {
+        _updateState(BleConnectionState.disconnected);
+      }
     }
 
     // Tenter une reconnexion automatique si activée
@@ -673,36 +983,148 @@ class BleService {
     }
   }
 
-  /// Planifie une tentative de reconnexion avec backoff progressif
+  /// Lance un scan continu de reconnexion pour le device connu.
+  /// Le scan tourne en boucle jusqu'à ce que le device soit retrouvé.
+  /// Nombre max de tentatives avant de passer en veille longue
+  static const int _maxFastRetries = 5;
+  /// Intervalle de veille longue (2 minutes)
+  static const int _slowRetrySec = 120;
+
   void _scheduleReconnect() {
     if (!_autoReconnectEnabled) return;
-
-    // Déterminer le délai selon le nombre de tentatives
-    final delayIndex = _reconnectAttempts.clamp(0, _reconnectDelays.length - 1);
-    final delaySec = _reconnectDelays[delayIndex];
+    if (_selectedDeviceId == null) return;
 
     _reconnectAttempts++;
+
+    // Backoff : 1s → 3s → 5s → 10s → 15s → puis veille longue (2min)
+    final int delaySec;
+    if (_reconnectAttempts <= 1) {
+      delaySec = 1;
+    } else if (_reconnectAttempts <= 3) {
+      delaySec = 3;
+    } else if (_reconnectAttempts <= _maxFastRetries) {
+      delaySec = 10;
+    } else {
+      delaySec = _slowRetrySec;
+    }
+
+    final mode = _reconnectAttempts > _maxFastRetries ? 'veille' : 'actif';
     // ignore: avoid_print
-    print('BLE: Reconnexion dans ${delaySec}s (tentative #$_reconnectAttempts)');
+    print('BLE: Reconnexion dans ${delaySec}s (tentative #$_reconnectAttempts, mode $mode)');
+
+    // Au-delà des tentatives rapides, repasser en disconnected (icône grise, pas orange)
+    if (_reconnectAttempts > _maxFastRetries) {
+      _updateState(BleConnectionState.disconnected);
+    }
 
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(seconds: delaySec), () {
       if (_autoReconnectEnabled &&
-          _connectionState == BleConnectionState.disconnected) {
-        _startReconnectScan();
+          (_connectionState == BleConnectionState.disconnected ||
+           _connectionState == BleConnectionState.scanning)) {
+        _startContinuousScan();
       }
     });
   }
 
-  /// Lance un scan rapide pour la reconnexion automatique
-  Future<void> _startReconnectScan() async {
+  /// Scan unique de 10s. Si pas trouvé → _scheduleReconnect avec backoff.
+  Future<void> _startContinuousScan() async {
     if (!_autoReconnectEnabled) return;
-    if (_connectionState != BleConnectionState.disconnected) return;
+    if (_selectedDeviceId == null) return;
+    if (_connectionState == BleConnectionState.connected ||
+        _connectionState == BleConnectionState.connecting) return;
+
+    // N'afficher l'état scanning que pendant les tentatives rapides
+    if (_reconnectAttempts <= _maxFastRetries) {
+      _updateState(BleConnectionState.scanning);
+    }
 
     // ignore: avoid_print
-    print('BLE: Scan de reconnexion automatique...');
-    // Scan court (5s) en mode auto-connect
-    await startScan(timeout: 5, autoConnect: true);
+    print('BLE: Scan pour $_selectedDeviceId (tentative #$_reconnectAttempts)...');
+
+    await FlutterBluePlus.stopScan();
+    _scanSubscription?.cancel();
+
+    bool found = false;
+    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      if (found) return;
+      for (final result in results) {
+        if (result.device.remoteId.str == _selectedDeviceId) {
+          found = true;
+          final advName = result.advertisementData.advName;
+          final platformName = result.device.platformName;
+          final deviceName = advName.isNotEmpty ? advName : platformName;
+          // ignore: avoid_print
+          print('BLE: Device retrouvé! "$deviceName" → connexion');
+          _reconnectAttempts = 0;
+          connectToDevice(result.device, deviceName: deviceName);
+          return;
+        }
+      }
+    });
+
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 10),
+      androidUsesFineLocation: true,
+    );
+
+    // Attendre la fin du scan
+    await Future.delayed(const Duration(seconds: 11));
+
+    if (!found && _autoReconnectEnabled &&
+        _connectionState != BleConnectionState.connected &&
+        _connectionState != BleConnectionState.connecting) {
+      // Planifier la prochaine tentative avec backoff
+      _scheduleReconnect();
+    }
+  }
+
+  /// Initialise le service: charge le device persisté, écoute l'état BT,
+  /// et démarre la reconnexion automatique si un device est connu.
+  Future<void> initialize() async {
+    // S'assurer que le device ID persisté est chargé avant de continuer
+    await _loadSelectedDeviceId();
+
+    // Écouter les changements d'état de l'adaptateur BT
+    _btStateSubscription?.cancel();
+    _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
+      if (state == BluetoothAdapterState.on) {
+        // BT vient d'être activé → relancer la reconnexion si device connu
+        if (_selectedDeviceId != null &&
+            _connectionState == BleConnectionState.disconnected) {
+          // ignore: avoid_print
+          print('BLE: Adaptateur BT activé → relance reconnexion');
+          _reconnectAttempts = 0;
+          _autoReconnectEnabled = true;
+          _scheduleReconnect();
+        }
+      } else if (state == BluetoothAdapterState.off) {
+        // BT désactivé → mettre en état disabled
+        _reconnectTimer?.cancel();
+        _updateState(BleConnectionState.disabled);
+      }
+    });
+
+    // Auto-reconnexion au démarrage si un device est mémorisé
+    if (_selectedDeviceId != null) {
+      // ignore: avoid_print
+      print('BLE: Device connu au démarrage → reconnexion automatique');
+      _autoReconnectEnabled = true;
+      _scheduleReconnect();
+    }
+  }
+
+  /// Déclenche immédiatement un scan de reconnexion (depuis foreground resume)
+  void triggerReconnect() {
+    if (_selectedDeviceId != null &&
+        (_connectionState == BleConnectionState.disconnected ||
+         _connectionState == BleConnectionState.scanning)) {
+      // ignore: avoid_print
+      print('BLE: triggerReconnect() → scan immédiat');
+      _reconnectTimer?.cancel();
+      _reconnectAttempts = 0;
+      _startContinuousScan();
+    }
   }
 
   /// Déconnecte l'appareil (déconnexion volontaire)
@@ -716,17 +1138,25 @@ class BleService {
     _connectionSubscription?.cancel();
     _batterySubscription?.cancel();
     _notificationSubscription?.cancel();
+    _buttonSubscription?.cancel();
 
     await _connectedDevice?.disconnect();
 
+    // Oublier le device sélectionné (déconnexion volontaire)
+    await _saveSelectedDeviceId(null);
+
     // Nettoyage sans reconnexion (on a désactivé _autoReconnectEnabled)
     _resetBuffer();
-    _batterySubscription?.cancel();
     _batterySubscription = null;
+    _buttonSubscription = null;
     _connectedDevice = null;
+    _connectedDeviceName = null;
     _txCharacteristic = null;
     _rxCharacteristic = null;
+    _buttonCharacteristic = null;
     _batteryCharacteristic = null;
+    _fwVersionCharacteristic = null;
+    _firmwareVersion = null;
     _batteryLevel = -1;
     _isCharging = false;
     _batteryLevelController.add(-1);
@@ -788,6 +1218,7 @@ class BleService {
   /// Libère toutes les ressources
   Future<void> dispose() async {
     _reconnectTimer?.cancel();
+    _btStateSubscription?.cancel();
     await disconnect();
     await _connectionStateController.close();
     await _audioDataController.close();

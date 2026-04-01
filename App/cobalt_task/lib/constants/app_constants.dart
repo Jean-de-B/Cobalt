@@ -15,7 +15,8 @@ import 'package:flutter/material.dart';
 
 class BleConstants {
   /// Préfixe du nom des montres à rechercher lors du scan BLE
-  static const String deviceNamePrefix = 'Cobalt Voice';
+  /// Le firmware génère "Cobalt XXXX" (XXXX = ID hardware unique)
+  static const String deviceNamePrefix = 'Cobalt ';
 
   /// UUID du service audio personnalisé (Nordic UART Service modifié)
   static const String serviceUuid = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -34,6 +35,17 @@ class BleConstants {
   /// L'appareil envoie les événements bouton (single/double/triple/long) via cette caractéristique
   static const String buttonCharacteristicUuid =
       '6e400004-b5a3-f393-e0a9-e50e24dcca9e';
+
+  /// UUID de la caractéristique Firmware Version (Read + Notify)
+  /// Format: 3 bytes [major, minor, patch]
+  static const String fwVersionCharacteristicUuid =
+      '6e400005-b5a3-f393-e0a9-e50e24dcca9e';
+
+  /// Commande pour entrer en mode DFU OTA
+  static const int cmdEnterDfu = 0xFD;
+
+  /// Commande pour demander la version firmware
+  static const int cmdGetVersion = 0xFE;
 
   /// MTU demandé à l'appareil (Maximum Transmission Unit)
   /// On demande 512, le firmware négocie à 247 (payload effectif: 244 bytes)

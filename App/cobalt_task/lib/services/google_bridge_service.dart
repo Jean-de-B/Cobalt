@@ -283,6 +283,20 @@ class GoogleBridgeService {
     );
   }
 
+  /// Ajoute une action locale à l'historique (API publique)
+  void addActionToHistory({
+    required NoteCategory category,
+    required String title,
+    required bool success,
+  }) {
+    _addToHistory(SyncAction(
+      timestamp: DateTime.now(),
+      category: category,
+      title: title,
+      success: success,
+    ));
+  }
+
   /// Ajoute une action à l'historique (max 5)
   void _addToHistory(SyncAction action) {
     _actionHistory.insert(0, action);

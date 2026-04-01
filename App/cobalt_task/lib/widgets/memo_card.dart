@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../constants/app_constants.dart';
 import '../models/voice_note.dart';
@@ -6,25 +7,15 @@ import '../services/ai_sorter_service.dart';
 /// =============================================================================
 /// memo_card.dart
 /// =============================================================================
-/// Widget carte pour afficher un memo vocal.
+/// Carte d'action tracée.
 ///
-/// Design minimaliste avec deux etats :
-/// - Contracte (defaut) : Icone + Titre gras + Heure
-/// - Etendu (au clic) : Divider + Player audio + Transcription brute
+/// Contracté (défaut) :
+///   [Icône] [Titre / contact] [Heure]
+///   + tous les détails structurés de l'action (toujours lisibles)
+///
+/// Développé (tap) :
+///   + transcription brute + lecteur audio (debug / vérification)
 /// =============================================================================
-
-/// Visuels d'une categorie (icone, couleur, label)
-class _CategoryVisuals {
-  final IconData icon;
-  final Color color;
-  final String label;
-
-  const _CategoryVisuals({
-    required this.icon,
-    required this.color,
-    required this.label,
-  });
-}
 
 class MemoCard extends StatefulWidget {
   final VoiceNote note;
@@ -49,6 +40,24 @@ class MemoCard extends StatefulWidget {
 class _MemoCardState extends State<MemoCard> {
   bool _isExpanded = false;
 
+  Map<String, dynamic>? get _action {
+    final json = widget.note.actionJson;
+    if (json == null || json.isEmpty) return null;
+    try {
+      return jsonDecode(json) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String get _intent => _action?['intent'] as String? ?? 'none';
+
+  /// La section debug est disponible si la note a un texte transcrit
+  bool get _canExpand =>
+      !widget.note.isProcessing &&
+      widget.note.errorMessage == null &&
+      widget.note.text.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Dismissible(
@@ -61,13 +70,8 @@ class _MemoCardState extends State<MemoCard> {
   }
 
   Widget _buildCard() {
-    final canExpand =
-        !widget.note.isProcessing && widget.note.errorMessage == null;
-
     return GestureDetector(
-      onTap: canExpand
-          ? () => setState(() => _isExpanded = !_isExpanded)
-          : null,
+      onTap: _canExpand ? () => setState(() => _isExpanded = !_isExpanded) : null,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         padding: const EdgeInsets.all(16),
@@ -89,13 +93,19 @@ class _MemoCardState extends State<MemoCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // === Ligne contractee : icone + titre + heure ===
-              _buildContractedRow(),
+              // === En-tête : icône + titre + badge type + heure ===
+              _buildHeader(),
 
-              // === Contenu etendu (si ouvert) ===
-              if (_isExpanded && canExpand) ...[
+              // === Détails structurés — toujours visibles après traitement ===
+              if (!widget.note.isProcessing && widget.note.errorMessage == null) ...[
+                const SizedBox(height: 10),
+                _buildStructuredContent(),
+              ],
+
+              // === Section debug — uniquement en mode développé ===
+              if (_isExpanded && _canExpand) ...[
                 _buildDivider(),
-                _buildExpandedContent(),
+                _buildDebugSection(),
               ],
             ],
           ),
@@ -105,41 +115,48 @@ class _MemoCardState extends State<MemoCard> {
   }
 
   // ===========================================================================
-  // CONTRACTED ROW
+  // EN-TÊTE (icône + titre + badge + heure)
   // ===========================================================================
 
-  /// Ligne principale toujours visible : [Icone 36x36] [Titre] ... [HH:MM]
-  Widget _buildContractedRow() {
-    final visuals = _getCategoryVisuals();
+  Widget _buildHeader() {
+    final visuals = _getVisuals();
+    final badge = _getBadge();
 
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Icone categorie
-        _buildCategoryIcon(visuals),
+        _buildIcon(visuals),
         const SizedBox(width: 12),
-
-        // Titre (1 ligne, ellipsis)
         Expanded(
           child: Text(
-            _getDisplayTitle(),
+            _getTitle(),
             style: AppTextStyles.cardTitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        const SizedBox(width: 12),
-
-        // Heure
-        Text(
-          _getTimeString(),
-          style: AppTextStyles.cardTime,
-        ),
+        if (badge != null) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: visuals.color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              badge,
+              style: AppTextStyles.metadata.copyWith(
+                color: visuals.color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
 
-  /// Icone de categorie 36x36 (spinner si processing, rouge si erreur)
-  Widget _buildCategoryIcon(_CategoryVisuals visuals) {
+  Widget _buildIcon(_ActionVisuals visuals) {
     if (widget.note.isProcessing) {
       return Container(
         width: 36,
@@ -154,8 +171,7 @@ class _MemoCardState extends State<MemoCard> {
             height: 18,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              valueColor:
-                  AlwaysStoppedAnimation<Color>(AppColors.textSecondary),
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.textSecondary),
             ),
           ),
         ),
@@ -186,40 +202,213 @@ class _MemoCardState extends State<MemoCard> {
   }
 
   // ===========================================================================
-  // EXPANDED CONTENT
+  // DÉTAILS STRUCTURÉS (toujours affichés)
   // ===========================================================================
 
-  /// Divider entre la ligne contractee et le contenu etendu
-  Widget _buildDivider() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 12),
-      child: Divider(height: 1, color: AppColors.border),
-    );
+  Widget _buildStructuredContent() {
+    final action = _action;
+    if (action == null) {
+      // Anciennes notes sans actionJson → texte du summary uniquement
+      final text = widget.note.summary;
+      if (text.isEmpty) return const SizedBox.shrink();
+      return Text(
+        _stripEmoji(text),
+        style: AppTextStyles.cardBody,
+      );
+    }
+
+    final params = action['params'] as Map<String, dynamic>? ?? {};
+    final resolved = action['resolved'] as Map<String, dynamic>? ?? {};
+
+    switch (_intent) {
+      case 'calendar':
+        return _buildCalendarDetails(params);
+      case 'sms':
+        return _buildMessageDetails(
+          contact: resolved['contact'] as String? ?? params['recipient'] as String? ?? '',
+          app: 'SMS',
+          message: params['message'] as String? ?? '',
+        );
+      case 'messaging':
+        return _buildMessageDetails(
+          contact: resolved['contact'] as String? ?? params['recipient'] as String? ?? '',
+          app: _appLabel(resolved['app'] as String? ?? params['app'] as String? ?? ''),
+          message: params['message'] as String? ?? '',
+        );
+      case 'message':
+        return _buildMessageDetails(
+          contact: resolved['contact'] as String? ?? params['recipient'] as String? ?? '',
+          app: _appLabel(resolved['app'] as String? ?? ''),
+          message: params['message'] as String? ?? '',
+        );
+      case 'payment':
+        return _buildPaymentDetails(params, resolved);
+      case 'none':
+      default:
+        final memo = params['memo'] as String?;
+        if (memo == null || memo.isEmpty) return const SizedBox.shrink();
+        final lines = memo.split('\n');
+        if (lines.length <= 1) return const SizedBox.shrink();
+        final rest = lines.skip(1).join('\n').trim();
+        if (rest.isEmpty) return const SizedBox.shrink();
+        return Text(
+          rest,
+          style: AppTextStyles.cardBody,
+          maxLines: 5,
+          overflow: TextOverflow.ellipsis,
+        );
+    }
   }
 
-  /// Contenu affiche quand la carte est etendue
-  Widget _buildExpandedContent() {
+  /// Événement calendrier : date + heure sur deux lignes, lieu, description
+  /// (titre déjà dans l'en-tête, heure d'enregistrement dans le debug)
+  Widget _buildCalendarDetails(Map<String, dynamic> params) {
+    final startRaw = params['start_time'] as String?;
+    final endRaw = params['end_time'] as String?;
+    final location = params['location'] as String?;
+    final description = params['description'] as String?;
+
+    final startDt = startRaw != null ? DateTime.tryParse(startRaw) : null;
+    final endDt = endRaw != null ? DateTime.tryParse(endRaw) : null;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Player audio
-        _buildAudioPlayer(),
-
-        // Transcription brute
-        if (widget.note.text.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          Text(
-            widget.note.text,
-            style: AppTextStyles.cardBody,
-            maxLines: 5,
-            overflow: TextOverflow.ellipsis,
+        if (startDt != null) ...[
+          _DetailRow(
+            icon: Icons.calendar_today,
+            color: AppColors.actionCalendar,
+            text: _formatDateOnly(startDt),
           ),
+          const SizedBox(height: 6),
+          _DetailRow(
+            icon: Icons.schedule,
+            color: AppColors.actionCalendar,
+            text: _formatTimeRange(startDt, endDt),
+          ),
+          const SizedBox(height: 6),
+        ],
+        if (location != null && location.isNotEmpty) ...[
+          _DetailRow(
+            icon: Icons.location_on_outlined,
+            color: AppColors.actionCalendar,
+            text: location,
+          ),
+          const SizedBox(height: 6),
+        ],
+        if (description != null && description.isNotEmpty)
+          _DetailRow(
+            icon: Icons.notes,
+            color: AppColors.actionCalendar,
+            text: description,
+          ),
+      ],
+    );
+  }
+
+  /// Message envoyé : texte exact dans un bloc cité (contact déjà dans l'en-tête)
+  Widget _buildMessageDetails({
+    required String contact,
+    required String app,
+    required String message,
+  }) {
+    final color = switch (_intent) {
+      'sms' => AppColors.actionSms,
+      _ => AppColors.actionWhatsapp,
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        border: Border(left: BorderSide(color: color, width: 3)),
+      ),
+      child: Text(
+        message.isNotEmpty ? message : '—',
+        style: AppTextStyles.cardBody,
+      ),
+    );
+  }
+
+  /// Paiement Fintecture : destinataire, montant, note
+  Widget _buildPaymentDetails(
+    Map<String, dynamic> params,
+    Map<String, dynamic> resolved,
+  ) {
+    const color = Color(0xFF00C471);
+    final contact = resolved['contact'] as String? ?? params['recipient'] as String? ?? '';
+    final amount = (params['amount'] as num?)?.toDouble() ?? 0;
+    final note = params['note'] as String?;
+    final amtStr = amount == amount.roundToDouble()
+        ? '${amount.toInt()}€'
+        : '${amount.toStringAsFixed(2)}€';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DetailRow(
+          icon: Icons.person_outline,
+          color: color,
+          text: contact.isNotEmpty ? contact : '—',
+          bold: true,
+        ),
+        const SizedBox(height: 6),
+        _DetailRow(
+          icon: Icons.euro,
+          color: color,
+          text: amtStr,
+          bold: true,
+        ),
+        const SizedBox(height: 4),
+        _DetailRow(
+          icon: Icons.account_balance,
+          color: color,
+          text: 'Demande de remboursement',
+        ),
+        if (note != null && note.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          _DetailRow(icon: Icons.notes, color: color, text: note),
         ],
       ],
     );
   }
 
-  /// Player audio minimaliste : [Play 32px] 00:12
+  // ===========================================================================
+  // SECTION DEBUG (développée uniquement)
+  // ===========================================================================
+
+  Widget _buildDebugSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Heure d'enregistrement (pour tous les types)
+        Row(
+          children: [
+            Icon(Icons.access_time, size: 14, color: AppColors.textTertiary),
+            const SizedBox(width: 4),
+            Text('Enregistré à ${_getTimeString()}', style: AppTextStyles.metadata),
+          ],
+        ),
+        const SizedBox(height: 10),
+        // Transcription brute entre guillemets
+        if (widget.note.text.isNotEmpty) ...[
+          Text(
+            '« ${widget.note.text} »',
+            style: AppTextStyles.cardBody.copyWith(
+              color: AppColors.textSecondary,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        // Lecteur audio
+        _buildAudioPlayer(),
+      ],
+    );
+  }
+
   Widget _buildAudioPlayer() {
     return Row(
       children: [
@@ -247,173 +436,152 @@ class _MemoCardState extends State<MemoCard> {
   // LOGIQUE D'AFFICHAGE
   // ===========================================================================
 
-  /// Heure formatee HH:MM
   String _getTimeString() {
     final d = widget.note.date;
     return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
-  /// Titre principal
-  String _getDisplayTitle() {
+  /// Titre principal de l'en-tête
+  String _getTitle() {
     if (widget.note.isProcessing) return 'Traitement...';
     if (widget.note.errorMessage != null) return 'Erreur';
 
-    final summary = widget.note.summary;
-
-    // Actions locales (emoji-prefixed) : strip l'emoji
-    if (summary.isNotEmpty) {
-      final stripped = _stripEmoji(summary);
-      if (stripped != summary && stripped.isNotEmpty) {
-        return stripped;
-      }
+    final action = _action;
+    if (action == null) {
+      final s = widget.note.summary;
+      return s.isNotEmpty ? _stripEmoji(s) : widget.note.text;
     }
 
-    // Categories AI sorter
-    switch (widget.note.category) {
-      case NoteCategory.contact:
-        return widget.note.contactName ??
-            (summary.isNotEmpty ? summary : 'Contact');
-      case NoteCategory.event:
-        return summary.isNotEmpty ? summary : 'Evenement';
-      case NoteCategory.todo:
-        return summary.isNotEmpty ? summary : 'Tache';
-      case NoteCategory.shopping:
-        return summary.isNotEmpty ? summary : 'Courses';
-      case NoteCategory.memo:
-        return summary.isNotEmpty ? summary : 'Memo';
-    }
-  }
+    final params = action['params'] as Map<String, dynamic>? ?? {};
+    final resolved = action['resolved'] as Map<String, dynamic>? ?? {};
 
-  /// Determine les visuels depuis la categorie, les emojis ou le sentiment
-  _CategoryVisuals _getCategoryVisuals() {
-    if (widget.note.isProcessing) {
-      return const _CategoryVisuals(
-        icon: Icons.hourglass_empty,
-        color: AppColors.textSecondary,
-        label: 'Traitement',
-      );
-    }
-
-    if (widget.note.errorMessage != null) {
-      return const _CategoryVisuals(
-        icon: Icons.error_outline,
-        color: Colors.red,
-        label: 'Erreur',
-      );
-    }
-
-    final summary = widget.note.summary;
-
-    // --- Actions locales (backward compat emoji detection) ---
-    if (summary.startsWith('\u{1F4C5}')) {
-      return const _CategoryVisuals(
-          icon: Icons.event,
-          color: AppColors.actionCalendar,
-          label: 'Calendrier');
-    }
-    if (summary.startsWith('\u{1F4AC}') && summary.contains('SMS')) {
-      return const _CategoryVisuals(
-          icon: Icons.sms, color: AppColors.actionSms, label: 'SMS');
-    }
-    if (summary.startsWith('\u{1F4AC}')) {
-      return const _CategoryVisuals(
-          icon: Icons.chat,
-          color: AppColors.actionWhatsapp,
-          label: 'Message');
-    }
-    if (summary.startsWith('\u{1F4DE}')) {
-      return const _CategoryVisuals(
-          icon: Icons.phone, color: AppColors.actionCall, label: 'Appel');
-    }
-    if (summary.startsWith('\u{1F5FA}')) {
-      return const _CategoryVisuals(
-          icon: Icons.navigation,
-          color: AppColors.actionNav,
-          label: 'Navigation');
-    }
-    if (summary.startsWith('\u{1F3B5}')) {
-      return const _CategoryVisuals(
-          icon: Icons.music_note,
-          color: AppColors.actionMedia,
-          label: 'Musique');
-    }
-    if (summary.startsWith('\u{1F4F1}')) {
-      return const _CategoryVisuals(
-          icon: Icons.apps,
-          color: AppColors.actionApp,
-          label: 'Application');
-    }
-    // Systeme (alarme, minuteur, volume) → icone unique
-    if (summary.startsWith('\u{23F0}') ||
-        summary.startsWith('\u{23F1}') ||
-        summary.startsWith('\u{1F50A}')) {
-      return const _CategoryVisuals(
-          icon: Icons.notifications_active,
-          color: AppColors.actionSystem,
-          label: 'Systeme');
-    }
-
-    // --- Categories AI sorter ---
-    switch (widget.note.category) {
-      case NoteCategory.todo:
-        return const _CategoryVisuals(
-            icon: Icons.checklist,
-            color: AppColors.categoryTodo,
-            label: 'Tache');
-      case NoteCategory.shopping:
-        return const _CategoryVisuals(
-            icon: Icons.shopping_cart_outlined,
-            color: AppColors.categoryShopping,
-            label: 'Courses');
-      case NoteCategory.event:
-        return const _CategoryVisuals(
-            icon: Icons.calendar_today,
-            color: AppColors.categoryEvent,
-            label: 'Evenement');
-      case NoteCategory.contact:
-        return const _CategoryVisuals(
-            icon: Icons.person_outline,
-            color: AppColors.categoryContact,
-            label: 'Contact');
-      case NoteCategory.memo:
-        return _getMemoVisuals();
-    }
-  }
-
-  /// Visuels MEMO selon le sentiment detecte par l'IA
-  _CategoryVisuals _getMemoVisuals() {
-    switch (widget.note.sentiment) {
-      case 'idea':
-        return const _CategoryVisuals(
-            icon: Icons.lightbulb_outline,
-            color: AppColors.categoryMemo,
-            label: 'Idee');
-      case 'frustration':
-        return const _CategoryVisuals(
-            icon: Icons.sentiment_very_dissatisfied,
-            color: AppColors.categoryMemo,
-            label: 'Memo');
-      case 'memory':
-        return const _CategoryVisuals(
-            icon: Icons.favorite_outline,
-            color: AppColors.categoryMemo,
-            label: 'Souvenir');
-      case 'question':
-        return const _CategoryVisuals(
-            icon: Icons.help_outline,
-            color: AppColors.categoryMemo,
-            label: 'Question');
+    switch (_intent) {
+      case 'calendar':
+        return params['title'] as String? ?? 'Événement';
+      case 'sms':
+      case 'messaging':
+      case 'message':
+        final c = resolved['contact'] as String? ?? params['recipient'] as String? ?? '';
+        return c.isNotEmpty ? c : 'Message';
+      case 'payment':
+        final c = resolved['contact'] as String? ?? params['recipient'] as String? ?? '';
+        final amt = (params['amount'] as num?)?.toDouble() ?? 0;
+        final amtStr = amt == amt.roundToDouble()
+            ? '${amt.toInt()}€'
+            : '${amt.toStringAsFixed(2)}€';
+        return '$amtStr → $c';
+      case 'none':
+        final memo = params['memo'] as String? ?? '';
+        if (memo.isEmpty) return 'Mémo';
+        final firstLine = memo.split('\n').first.trim();
+        return firstLine.isNotEmpty ? firstLine : 'Mémo';
       default:
-        return const _CategoryVisuals(
-            icon: Icons.edit_note,
-            color: AppColors.categoryMemo,
-            label: 'Memo');
+        return _stripEmoji(widget.note.summary);
+    }
+  }
+
+  /// Badge court sous le titre (type d'action)
+  String? _getBadge() {
+    if (widget.note.isProcessing || widget.note.errorMessage != null) return null;
+    final action = _action;
+
+    // Notes legacy sans actionJson : badge basé sur la catégorie IA
+    if (action == null) return _badgeForCategory(widget.note.category);
+
+    final params = action['params'] as Map<String, dynamic>? ?? {};
+    final resolved = action['resolved'] as Map<String, dynamic>? ?? {};
+
+    switch (_intent) {
+      case 'calendar':
+        return 'Google Calendar';
+      case 'sms':
+        return 'SMS';
+      case 'messaging':
+        return _appLabel(resolved['app'] as String? ?? params['app'] as String? ?? '');
+      case 'message':
+        return _appLabel(resolved['app'] as String? ?? '');
+      case 'payment':
+        return 'Paiement';
+      case 'none':
+      default:
+        return _badgeForCategory(widget.note.category);
+    }
+  }
+
+  String? _badgeForCategory(NoteCategory category) => switch (category) {
+    NoteCategory.todo     => 'Google Tasks',
+    NoteCategory.shopping => 'Google Tasks',
+    NoteCategory.event    => 'Google Calendar',
+    NoteCategory.contact  => 'Contacts',
+    NoteCategory.memo     => 'Google Tasks',
+  };
+
+  _ActionVisuals _getVisuals() {
+    if (widget.note.isProcessing) {
+      return const _ActionVisuals(icon: Icons.hourglass_empty, color: AppColors.textSecondary);
+    }
+    if (widget.note.errorMessage != null) {
+      return const _ActionVisuals(icon: Icons.error_outline, color: Colors.red);
+    }
+    switch (_intent) {
+      case 'calendar':
+        return const _ActionVisuals(icon: Icons.event, color: AppColors.actionCalendar);
+      case 'sms':
+        return const _ActionVisuals(icon: Icons.sms, color: AppColors.actionSms);
+      case 'messaging':
+      case 'message':
+        return const _ActionVisuals(icon: Icons.chat_bubble_outline, color: AppColors.actionWhatsapp);
+      case 'payment':
+        return const _ActionVisuals(icon: Icons.account_balance, color: Color(0xFF00C471));
+      case 'none':
+        return switch (widget.note.category) {
+          NoteCategory.todo     => const _ActionVisuals(icon: Icons.checklist, color: AppColors.categoryTodo),
+          NoteCategory.shopping => const _ActionVisuals(icon: Icons.shopping_cart_outlined, color: AppColors.categoryShopping),
+          NoteCategory.event    => const _ActionVisuals(icon: Icons.event_note, color: AppColors.categoryEvent),
+          NoteCategory.contact  => const _ActionVisuals(icon: Icons.person_outline, color: AppColors.categoryContact),
+          NoteCategory.memo     => const _ActionVisuals(icon: Icons.edit_note, color: AppColors.categoryMemo),
+        };
+      default:
+        return const _ActionVisuals(icon: Icons.edit_note, color: AppColors.categoryMemo);
     }
   }
 
   // ===========================================================================
-  // UTILITAIRES
+  // HELPERS
   // ===========================================================================
+
+  /// "Mer 16 mars 2026"
+  String _formatDateOnly(DateTime dt) {
+    final weekdays = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+    final months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+                    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+    return '${weekdays[dt.weekday - 1]} ${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  }
+
+  /// "14h00 – 15h30"  ou  "14h00"
+  String _formatTimeRange(DateTime start, DateTime? end) {
+    String t(DateTime d) =>
+        '${d.hour.toString().padLeft(2, '0')}h${d.minute.toString().padLeft(2, '0')}';
+    return end != null ? '${t(start)} – ${t(end)}' : t(start);
+  }
+
+  String _appLabel(String app) {
+    return switch (app.toLowerCase()) {
+      'whatsapp' || 'wa' => 'WhatsApp',
+      'telegram' || 'tg' => 'Telegram',
+      'signal' => 'Signal',
+      'messenger' => 'Messenger',
+      'sms' => 'SMS',
+      _ => 'SMS',
+    };
+  }
+
+  Widget _buildDivider() {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 12),
+      child: Divider(height: 1, color: AppColors.border),
+    );
+  }
 
   Widget _buildDeleteBackground() {
     return Container(
@@ -428,14 +596,13 @@ class _MemoCardState extends State<MemoCard> {
     );
   }
 
-  Future<bool> _handleDismiss(
-      BuildContext context, DismissDirection direction) async {
+  Future<bool> _handleDismiss(BuildContext context, DismissDirection direction) async {
     if (direction == DismissDirection.endToStart) {
       final confirmed = await showDialog<bool>(
             context: context,
             builder: (context) => AlertDialog(
-              title: const Text('Supprimer le memo ?'),
-              content: const Text('Cette action est irreversible.'),
+              title: const Text('Supprimer ?'),
+              content: const Text('Cette action est irréversible.'),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
@@ -444,26 +611,71 @@ class _MemoCardState extends State<MemoCard> {
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Supprimer',
-                      style: TextStyle(color: Colors.red)),
+                  child: const Text('Supprimer', style: TextStyle(color: Colors.red)),
                 ),
               ],
             ),
           ) ??
           false;
-
       if (confirmed) widget.onDelete?.call();
       return confirmed;
     }
     return false;
   }
 
-  /// Strip les emojis en debut de summary
   String _stripEmoji(String text) {
     return text.replaceFirst(
         RegExp(
             r'^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]+\s*',
             unicode: true),
         '');
+  }
+}
+
+// =============================================================================
+// DATA CLASSES
+// =============================================================================
+
+class _ActionVisuals {
+  final IconData icon;
+  final Color color;
+  const _ActionVisuals({required this.icon, required this.color});
+}
+
+// =============================================================================
+// WIDGET UTILITAIRE
+// =============================================================================
+
+/// Ligne de détail : icône colorée + texte
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String text;
+  final bool bold;
+
+  const _DetailRow({
+    required this.icon,
+    required this.color,
+    required this.text,
+    this.bold = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 15, color: color),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            text,
+            style: bold
+                ? AppTextStyles.cardBody.copyWith(fontWeight: FontWeight.w600)
+                : AppTextStyles.cardBody,
+          ),
+        ),
+      ],
+    );
   }
 }

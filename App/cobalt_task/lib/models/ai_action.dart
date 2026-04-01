@@ -40,6 +40,8 @@ enum MediaControlType {
   previous,
   stop,
   playSearch, // Recherche et lecture (ex: "joue du jazz sur Spotify")
+  like, // Like/sauvegarder le titre en cours
+  transfer, // Transférer la lecture vers un autre appareil
 }
 
 /// Types de contrôle système
@@ -162,6 +164,7 @@ sealed class AiAction {
           controlType: _parseMediaControlType(params['control_type']),
           query: params['query'] as String?,
           app: params['app'] as String?,
+          deviceType: params['device_type'] as String?,
         );
 
       case 'app_launch':
@@ -542,12 +545,14 @@ final class MediaAction extends AiAction {
   final MediaControlType controlType;
   final String? query; // Pour recherche musicale
   final String? app; // App cible (spotify, youtube_music, deezer, etc.)
+  final String? deviceType; // Pour transfer (ordinateur, telephone, enceinte, tv)
 
   const MediaAction({
     required super.reasoning,
     required this.controlType,
     this.query,
     this.app,
+    this.deviceType,
   }) : super(intent: ActionIntent.media);
 
   @override
@@ -565,7 +570,7 @@ final class MediaAction extends AiAction {
   String toString() => 'MediaAction(controlType: $controlType, query: $query, app: $app)';
 }
 
-/// Action paiement - Remboursement via PayPal
+/// Action paiement - Demande de remboursement via Fintecture
 final class PaymentAction extends AiAction {
   final String recipient;
   final double amount;
@@ -794,6 +799,8 @@ MediaControlType _parseMediaControlType(dynamic value) {
     'previous' || 'precedent' || 'back' => MediaControlType.previous,
     'stop' || 'arreter' => MediaControlType.stop,
     'play_search' || 'playsearch' || 'search' || 'recherche' => MediaControlType.playSearch,
+    'like' || 'liker' || 'sauvegarder' || 'save' || 'favorite' || 'favori' => MediaControlType.like,
+    'transfer' || 'transferer' || 'transférer' || 'changer' => MediaControlType.transfer,
     _ => MediaControlType.playPause,
   };
 }

@@ -1,6 +1,11 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../constants/app_constants.dart';
 import '../services/audio_service.dart';
+import '../services/dfu_service.dart';
 
 /// =============================================================================
 /// ble_status_indicator.dart
@@ -44,28 +49,28 @@ class BleStatusIndicator extends StatelessWidget {
     final (color, icon, tooltip) = switch (state) {
       BleConnectionState.disabled => (
           AppColors.bleDisconnected,
-          Icons.bluetooth_disabled,
+          Icons.watch_off,
           'Bluetooth désactivé',
         ),
       BleConnectionState.disconnected => (
           AppColors.bleDisconnected,
-          Icons.bluetooth,
-          'Déconnecté - Appuyez pour scanner',
+          Icons.watch,
+          'Montre déconnectée - Appuyez pour scanner',
         ),
       BleConnectionState.scanning => (
           AppColors.bleConnecting,
-          Icons.bluetooth_searching,
-          'Recherche en cours...',
+          Icons.watch,
+          'Recherche de la montre...',
         ),
       BleConnectionState.connecting => (
           AppColors.bleConnecting,
-          Icons.bluetooth_connected,
+          Icons.watch,
           'Connexion en cours...',
         ),
       BleConnectionState.connected => (
           AppColors.bleConnected,
-          Icons.bluetooth_connected,
-          'Connecté à Cobalt Task',
+          Icons.watch,
+          'Connecté à ${audioService.connectedDeviceName ?? "Cobalt"}',
         ),
       BleConnectionState.syncing => (
           AppColors.bleSyncing,
@@ -74,7 +79,7 @@ class BleStatusIndicator extends StatelessWidget {
         ),
       BleConnectionState.error => (
           Colors.red,
-          Icons.bluetooth_disabled,
+          Icons.watch_off,
           'Erreur de connexion',
         ),
     };
@@ -92,8 +97,8 @@ class BleStatusIndicator extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(8.0),
           child: isAnimated
-              ? _AnimatedIcon(icon: icon, color: color)
-              : Icon(icon, color: color, size: 24),
+              ? _AnimatedIcon(icon: icon, color: color, size: 21.6)
+              : Icon(icon, color: color, size: 21.6),
         ),
       ),
     );
@@ -101,77 +106,198 @@ class BleStatusIndicator extends StatelessWidget {
 
   void _handleTap(BuildContext context, BleConnectionState state) {
     switch (state) {
-      case BleConnectionState.disabled:
-        // Afficher un message pour activer le Bluetooth
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Veuillez activer le Bluetooth',
-              style: TextStyle(color: Colors.white),
-            ),
-            backgroundColor: AppColors.surface,
-          ),
-        );
+      case BleConnectionState.connected:
+        _showConnectionMenu(context);
         break;
-      case BleConnectionState.disconnected:
-      case BleConnectionState.error:
-        // Ouvrir le device picker (ou scan direct si pas de callback)
+      default:
+        // Toujours ouvrir le picker (scan, connecting, disconnected, disabled, error)
         if (onScanRequested != null) {
           onScanRequested!();
         } else {
           audioService.startBleScan();
         }
         break;
-      case BleConnectionState.connected:
-        // Afficher les options de déconnexion
-        _showConnectionMenu(context);
-        break;
-      default:
-        // Scan ou connexion en cours, ne rien faire
-        break;
     }
   }
 
   void _showConnectionMenu(BuildContext context) {
+    final fwVersion = audioService.firmwareVersion;
+    final deviceName = audioService.connectedDeviceName ?? 'Cobalt';
+
+    // Lancer le browse scan pour afficher les autres montres en dessous
+    audioService.startBrowseScan();
+
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(
-                Icons.bluetooth_connected,
-                color: AppColors.bleConnected,
-              ),
-              title: const Text(
-                'Cobalt Task',
-                style: AppTextStyles.noteText,
-              ),
-              subtitle: const Text(
-                'Connecté',
-                style: AppTextStyles.metadata,
+            // Header : montre + nom + version | MAJ | déconnecter
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.watch, color: AppColors.bleConnected, size: 18),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          deviceName,
+                          style: const TextStyle(
+                            color: AppColors.bleConnected,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                        ),
+                        if (fwVersion != null)
+                          Text(
+                            'v$fwVersion',
+                            style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                          ),
+                      ],
+                    ),
+                  ),
+                  // MAJ firmware
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      audioService.stopBrowseScan();
+                      _showDfuDialog(context);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.bleSyncing.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.system_update, size: 14, color: AppColors.bleSyncing),
+                          const SizedBox(width: 4),
+                          Text('MAJ', style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.bleSyncing,
+                          )),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Déconnecter
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      audioService.stopBrowseScan();
+                      audioService.disconnectBle();
+                    },
+                    child: const Icon(Icons.logout, color: Colors.red, size: 18),
+                  ),
+                ],
               ),
             ),
-            const Divider(color: AppColors.border),
-            ListTile(
-              leading: const Icon(
-                Icons.bluetooth_disabled,
-                color: AppColors.textSecondary,
+            const Divider(color: AppColors.border, height: 1),
+            // Autres montres visibles
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Autres appareils à proximité',
+                  style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                ),
               ),
-              title: const Text(
-                'Déconnecter',
-                style: AppTextStyles.noteText,
-              ),
-              onTap: () {
-                audioService.disconnectBle();
-                Navigator.pop(context);
+            ),
+            StreamBuilder<List<ScanResult>>(
+              stream: audioService.discoveredDevicesStream,
+              initialData: audioService.discoveredDevices,
+              builder: (context, snapshot) {
+                final devices = (snapshot.data ?? [])
+                    .where((d) {
+                      final name = d.advertisementData.advName.isNotEmpty
+                          ? d.advertisementData.advName
+                          : d.device.platformName;
+                      // Exclure la montre déjà connectée
+                      return name != deviceName && name.isNotEmpty;
+                    })
+                    .toList();
+
+                if (devices.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(
+                          width: 12, height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            valueColor: AlwaysStoppedAnimation<Color>(AppColors.textTertiary),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('Recherche...', style: AppTextStyles.metadata.copyWith(fontSize: 11)),
+                      ],
+                    ),
+                  );
+                }
+
+                return ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 160),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: devices.length,
+                    itemBuilder: (context, index) {
+                      final result = devices[index];
+                      final name = result.advertisementData.advName.isNotEmpty
+                          ? result.advertisementData.advName
+                          : result.device.platformName;
+                      final isCobalt = name.toLowerCase().startsWith('cobalt');
+
+                      return ListTile(
+                        dense: true,
+                        visualDensity: const VisualDensity(vertical: -2),
+                        leading: Icon(
+                          isCobalt ? Icons.watch : Icons.bluetooth,
+                          size: 18,
+                          color: isCobalt ? AppColors.textSecondary : AppColors.textTertiary,
+                        ),
+                        title: Text(name, style: AppTextStyles.metadata.copyWith(
+                          color: isCobalt ? AppColors.textPrimary : AppColors.textSecondary,
+                          fontSize: 12,
+                        )),
+                        trailing: Text('${result.rssi} dBm',
+                          style: AppTextStyles.metadata.copyWith(fontSize: 10)),
+                        onTap: isCobalt ? () {
+                          Navigator.pop(sheetContext);
+                          audioService.stopBrowseScan();
+                          audioService.connectToBleDevice(result.device, deviceName: name);
+                        } : null,
+                      );
+                    },
+                  ),
+                );
               },
             ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
+    ).whenComplete(() => audioService.stopBrowseScan());
+  }
+
+  void _showDfuDialog(BuildContext context) {
+    final dfuService = DfuService(audioService.bleServiceInstance);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _DfuDialog(dfuService: dfuService),
     );
   }
 }
@@ -180,10 +306,12 @@ class BleStatusIndicator extends StatelessWidget {
 class _AnimatedIcon extends StatefulWidget {
   final IconData icon;
   final Color color;
+  final double size;
 
   const _AnimatedIcon({
     required this.icon,
     required this.color,
+    this.size = 24,
   });
 
   @override
@@ -224,10 +352,190 @@ class _AnimatedIconState extends State<_AnimatedIcon>
           child: Icon(
             widget.icon,
             color: widget.color,
-            size: 24,
+            size: widget.size,
           ),
         );
       },
     );
+  }
+}
+
+/// Dialog de mise à jour firmware OTA (DFU)
+class _DfuDialog extends StatefulWidget {
+  final DfuService dfuService;
+
+  const _DfuDialog({required this.dfuService});
+
+  @override
+  State<_DfuDialog> createState() => _DfuDialogState();
+}
+
+class _DfuDialogState extends State<_DfuDialog> {
+  StreamSubscription? _stateSub;
+  StreamSubscription? _progressSub;
+  StreamSubscription? _statusSub;
+
+  DfuState _state = DfuState.idle;
+  double _progress = 0.0;
+  String _status = 'Sélectionnez un fichier firmware (.zip)';
+
+  @override
+  void initState() {
+    super.initState();
+    _stateSub = widget.dfuService.stateStream.listen((s) {
+      if (mounted) setState(() => _state = s);
+    });
+    _progressSub = widget.dfuService.progressStream.listen((p) {
+      if (mounted) setState(() => _progress = p);
+    });
+    _statusSub = widget.dfuService.statusStream.listen((s) {
+      if (mounted) setState(() => _status = s);
+    });
+  }
+
+  @override
+  void dispose() {
+    _stateSub?.cancel();
+    _progressSub?.cancel();
+    _statusSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.surface,
+      title: const Row(
+        children: [
+          Icon(Icons.system_update, color: AppColors.bleSyncing),
+          SizedBox(width: 8),
+          Text('Mise à jour firmware', style: AppTextStyles.heading),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_status, style: AppTextStyles.cardBody),
+          const SizedBox(height: 16),
+          if (_state == DfuState.uploading || _state == DfuState.preparingDevice ||
+              _state == DfuState.waitingForDfu) ...[
+            LinearProgressIndicator(
+              value: _state == DfuState.uploading ? _progress : null,
+              backgroundColor: AppColors.border,
+              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.bleSyncing),
+            ),
+            const SizedBox(height: 8),
+            if (_state == DfuState.uploading)
+              Text(
+                '${(_progress * 100).toInt()}%',
+                style: AppTextStyles.metadata,
+              ),
+          ],
+          if (_state == DfuState.completed)
+            const Row(
+              children: [
+                Icon(Icons.check_circle, color: AppColors.bleConnected, size: 20),
+                SizedBox(width: 8),
+                Text('Mise à jour réussie!', style: AppTextStyles.cardBody),
+              ],
+            ),
+          if (_state == DfuState.error)
+            Row(
+              children: [
+                const Icon(Icons.error, color: Colors.red, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.dfuService.errorMessage ?? 'Erreur inconnue',
+                    style: AppTextStyles.cardBody.copyWith(color: Colors.red),
+                  ),
+                ),
+              ],
+            ),
+          if (_state == DfuState.idle) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Placez le fichier cobalt_update.zip\n'
+              'dans le dossier Download du téléphone,\n'
+              'puis appuyez sur "Lancer".',
+              style: AppTextStyles.metadata,
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        if (_state == DfuState.uploading)
+          TextButton(
+            onPressed: () {
+              widget.dfuService.abort();
+            },
+            child: const Text('Annuler', style: TextStyle(color: Colors.red)),
+          ),
+        if (_state == DfuState.idle || _state == DfuState.error)
+          TextButton(
+            onPressed: () {
+              widget.dfuService.reset();
+              Navigator.pop(context);
+            },
+            child: const Text('Fermer', style: TextStyle(color: AppColors.textSecondary)),
+          ),
+        if (_state == DfuState.idle)
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.bleSyncing,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: _startUpdate,
+            child: const Text('Lancer'),
+          ),
+        if (_state == DfuState.completed || _state == DfuState.error)
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.bleConnected,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              widget.dfuService.reset();
+              Navigator.pop(context);
+            },
+            child: const Text('OK'),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _startUpdate() async {
+    // Demander la permission d'accès au stockage
+    if (Platform.isAndroid) {
+      final status = await Permission.manageExternalStorage.request();
+      if (!status.isGranted) {
+        if (mounted) {
+          setState(() {
+            _status = 'Permission de stockage refusée.\n\n'
+                'Allez dans Paramètres > Applications > Cobalt Task > Permissions\n'
+                'et autorisez l\'accès aux fichiers.';
+          });
+        }
+        return;
+      }
+    }
+
+    // Chemin vers le fichier dans le dossier Download
+    const dfuPath = '/storage/emulated/0/Download/cobalt_update.zip';
+
+    // Vérifier que le fichier existe avant de lancer le DFU
+    if (!File(dfuPath).existsSync()) {
+      if (mounted) {
+        setState(() {
+          _status = 'Fichier introuvable!\n\n'
+              'Placez le fichier cobalt_update.zip\n'
+              'dans le dossier Download du téléphone.';
+        });
+      }
+      return;
+    }
+
+    await widget.dfuService.startDfu(dfuPath);
   }
 }

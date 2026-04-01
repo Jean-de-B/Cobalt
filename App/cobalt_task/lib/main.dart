@@ -9,6 +9,7 @@ import 'services/foreground_service.dart';
 import 'services/audio_feedback_service.dart';
 import 'services/sherpa_transcription_service.dart';
 import 'services/hardware_button_service.dart';
+import 'services/settings_service.dart';
 
 /// =============================================================================
 /// main.dart
@@ -89,6 +90,11 @@ Future<void> _initializeServices() async {
     // ignore: avoid_print
     print('INIT: Erreur base de donnees: $e');
   }
+
+  // 2b. Service de paramètres
+  await SettingsService().initialize();
+  // ignore: avoid_print
+  print('INIT: SettingsService initialisé');
 
   // 3. Service de feedback audio (TTS)
   try {

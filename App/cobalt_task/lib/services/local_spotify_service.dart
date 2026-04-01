@@ -50,7 +50,7 @@ class LocalSpotifyService {
   static const _tokenUrl = 'https://accounts.spotify.com/api/token';
   static const _apiBase = 'https://api.spotify.com/v1';
   static const _redirectUri = 'cobalttask://spotify-callback';
-  static const _scopes = 'user-modify-playback-state user-read-playback-state';
+  static const _scopes = 'user-modify-playback-state user-read-playback-state user-library-modify user-library-read';
   static const _tokenFileName = 'spotify_tokens.json';
 
   // --- État ---
@@ -137,6 +137,7 @@ class LocalSpotifyService {
       'code_challenge_method': 'S256',
       'code_challenge': codeChallenge,
       'scope': _scopes,
+      'show_dialog': 'true', // Force le consentement explicite (nouveaux scopes)
     });
     // ignore: avoid_print
     print('[Spotify] URL OAuth construite: ${uri.toString().substring(0, 80)}...');
@@ -282,6 +283,7 @@ class LocalSpotifyService {
         'access_token': _accessToken,
         'refresh_token': _refreshToken,
         'expires_at': _expiresAt?.toIso8601String(),
+        'scopes': _scopes,
       }));
     } catch (e) {
       // ignore: avoid_print
@@ -295,6 +297,16 @@ class LocalSpotifyService {
       final file = File('${dir.path}/$_tokenFileName');
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
+
+        // Vérifier si les scopes ont changé → forcer réauthentification
+        final savedScopes = data['scopes'] as String?;
+        if (savedScopes != _scopes) {
+          // ignore: avoid_print
+          print('[Spotify] Scopes changés ($savedScopes → $_scopes) → tokens invalidés');
+          await file.delete();
+          return;
+        }
+
         _accessToken = data['access_token'] as String?;
         _refreshToken = data['refresh_token'] as String?;
         _expiresAt = data['expires_at'] != null
@@ -356,29 +368,42 @@ class LocalSpotifyService {
       final searchData = jsonDecode(searchResponse.body);
 
       // 2. Prendre le premier résultat (piste ou playlist)
-      String? uri;
       final tracks = searchData['tracks']?['items'] as List?;
       final playlists = searchData['playlists']?['items'] as List?;
 
-      if (tracks != null && tracks.isNotEmpty) {
-        uri = tracks[0]['uri'] as String?;
-      } else if (playlists != null && playlists.isNotEmpty) {
-        uri = playlists[0]['uri'] as String?;
-      }
+      String playBody;
 
-      if (uri == null) {
+      if (tracks != null && tracks.isNotEmpty) {
+        final track = tracks[0] as Map<String, dynamic>;
+        final trackUri = track['uri'] as String?;
+        // Utiliser l'album comme contexte → lance l'album à partir de ce track
+        // Ça reproduit le comportement Spotify natif (radio/file d'attente)
+        final album = track['album'] as Map<String, dynamic>?;
+        final albumUri = album?['uri'] as String?;
+
+        if (trackUri == null) {
+          return SpotifyResult.failure('Aucun résultat pour "$query"');
+        }
+
+        if (albumUri != null) {
+          // Lancer l'album en commençant par le track sélectionné
+          playBody = jsonEncode({
+            'context_uri': albumUri,
+            'offset': {'uri': trackUri},
+          });
+        } else {
+          // Fallback : track seul (ne devrait pas arriver)
+          playBody = jsonEncode({'uris': [trackUri]});
+        }
+      } else if (playlists != null && playlists.isNotEmpty) {
+        final playlistUri = playlists[0]['uri'] as String?;
+        if (playlistUri == null) {
+          return SpotifyResult.failure('Aucun résultat pour "$query"');
+        }
+        playBody = jsonEncode({'context_uri': playlistUri});
+      } else {
         return SpotifyResult.failure('Aucun résultat pour "$query"');
       }
-
-      // 3. Lancer la lecture
-      final isContext = uri.contains(':playlist:') ||
-          uri.contains(':album:') ||
-          uri.contains(':artist:');
-      final playBody = isContext
-          ? jsonEncode({'context_uri': uri})
-          : jsonEncode({
-              'uris': [uri]
-            });
 
       // Utiliser _apiPut qui gère automatiquement le 404 → device_id
       final result = await _apiPut(
@@ -388,7 +413,7 @@ class LocalSpotifyService {
 
       if (result.success) {
         // ignore: avoid_print
-        print('[Spotify] Lecture lancée: $query → $uri');
+        print('[Spotify] Lecture lancée: $query');
       }
       return result;
     } catch (e) {
@@ -418,6 +443,61 @@ class LocalSpotifyService {
     return await _apiPost('$_apiBase/me/player/previous');
   }
 
+  /// Récupère le volume Spotify actuel (0-100), ou null si indisponible
+  Future<int?> getVolume() async {
+    final state = await getPlayerState();
+    if (state == null) return null;
+    final device = state['device'] as Map<String, dynamic>?;
+    return device?['volume_percent'] as int?;
+  }
+
+  /// Définit le volume Spotify (0-100) sur le device actif
+  Future<SpotifyResult> setVolume(int percent) async {
+    final clamped = percent.clamp(0, 100);
+    return await _apiPut('$_apiBase/me/player/volume?volume_percent=$clamped');
+  }
+
+  /// Like le titre en cours (sauvegarde dans la bibliothèque)
+  Future<SpotifyResult> likeCurrentTrack() async {
+    if (!await _ensureValidToken()) {
+      return SpotifyResult.failure('Non connecté à Spotify');
+    }
+    try {
+      // Récupérer le track en cours
+      final state = await getPlayerState();
+      final trackId = (state?['item'] as Map<String, dynamic>?)?['id'] as String?;
+      if (trackId == null) {
+        return SpotifyResult.failure('Aucun titre en cours de lecture');
+      }
+
+      final trackName = (state?['item'] as Map<String, dynamic>?)?['name'] ?? 'titre';
+
+      // ignore: avoid_print
+      print('[Spotify] Like track: $trackName (id=$trackId)');
+
+      final response = await http.put(
+        Uri.parse('$_apiBase/me/tracks'),
+        headers: {
+          'Authorization': 'Bearer $_accessToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'ids': [trackId]}),
+      );
+
+      // ignore: avoid_print
+      print('[Spotify] Like response: ${response.statusCode} ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        // ignore: avoid_print
+        print('[Spotify] Titre liké: $trackName');
+        return SpotifyResult.success();
+      }
+      return SpotifyResult.failure('Erreur like: ${response.statusCode}');
+    } catch (e) {
+      return SpotifyResult.failure(e.toString());
+    }
+  }
+
   /// Obtient l'état actuel du lecteur
   Future<Map<String, dynamic>?> getPlayerState() async {
     if (!await _ensureValidToken()) return null;
@@ -438,6 +518,30 @@ class LocalSpotifyService {
   // ===========================================================================
   // GESTION DES APPAREILS
   // ===========================================================================
+
+  /// Liste tous les appareils Spotify disponibles
+  Future<List<Map<String, dynamic>>> getDevices() async {
+    if (!await _ensureValidToken()) return [];
+    try {
+      final response = await http.get(
+        Uri.parse('$_apiBase/me/player/devices'),
+        headers: {'Authorization': 'Bearer $_accessToken'},
+      );
+      if (response.statusCode != 200) return [];
+      final data = jsonDecode(response.body);
+      return (data['devices'] as List? ?? []).cast<Map<String, dynamic>>();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// Transfère la lecture vers un appareil spécifique
+  Future<SpotifyResult> transferPlayback(String deviceId) async {
+    return await _apiPut(
+      '$_apiBase/me/player',
+      body: jsonEncode({'device_ids': [deviceId], 'play': true}),
+    );
+  }
 
   /// Récupère l'ID d'un appareil Spotify disponible
   /// Retourne l'appareil actif, ou le premier disponible, ou null

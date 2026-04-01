@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../constants/app_constants.dart';
+import '../models/incoming_message.dart';
 import '../models/voice_note.dart';
 import '../models/ai_action.dart';
 import '../services/ai_sorter_service.dart';
@@ -13,13 +15,17 @@ import '../services/local_action_dispatcher.dart';
 import '../services/overlay_permission_service.dart';
 import '../services/validated_contacts_service.dart';
 import '../services/contact_lookup_service.dart';
+import 'package:flutter_contacts/flutter_contacts.dart' show Contact;
 import '../services/incoming_history_service.dart';
 import '../services/audio_feedback_service.dart';
 import '../services/assistant_launch_service.dart';
 import '../services/cobalt_overlay_service.dart';
 import '../services/foreground_service.dart';
-import '../services/paypal_payment_service.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../services/message_aggregator_service.dart';
+import '../services/fintecture_service.dart';
+import '../models/fintecture_transaction.dart';
+import '../services/local_sms_service.dart';
+import 'settings_screen.dart';
 import '../widgets/ble_status_indicator.dart';
 import '../widgets/memo_card.dart';
 
@@ -47,7 +53,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AudioFeedbackService _audioFeedback = AudioFeedbackService();
   final AssistantLaunchService _assistantLaunchService = AssistantLaunchService();
   final CobaltOverlayService _overlayService = CobaltOverlayService();
-  final PayPalPaymentService _paypalService = PayPalPaymentService();
+  final FintectureService _fintectureService = FintectureService();
+  final MessageAggregatorService _messageAggregator = MessageAggregatorService();
   StreamSubscription<PendingValidation>? _pendingValidationSub;
   StreamSubscription<String>? _assistLaunchSub;
   StreamSubscription<bool>? _micButtonSub;
@@ -60,7 +67,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _databaseService.refreshStream();
+    _fintectureService.initialize();
     _checkOverlayPermission();
+    // Vérifier accessibilité et permission notifications après le premier frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkNotificationListenerPermission();
+    });
 
     // Écouter les nouvelles validations en attente (affichage immédiat du dialog)
     _pendingValidationSub = _validatedContactsService.pendingAddedStream.listen((pending) {
@@ -98,6 +110,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // ignore: avoid_print
       print('[HomeScreen] Overlay dismiss');
     });
+  }
+
+  void _showBluetoothRequiredDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Row(
+          children: [
+            Icon(Icons.bluetooth_disabled, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Bluetooth requis', style: AppTextStyles.heading),
+          ],
+        ),
+        content: const Text(
+          'Cobalt Task nécessite le Bluetooth pour communiquer avec la montre.\n\n'
+          'Veuillez activer le Bluetooth pour continuer.',
+          style: AppTextStyles.cardBody,
+        ),
+        actions: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.bleConnected,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.bluetooth),
+            label: const Text('Activer'),
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              await FlutterBluePlus.turnOn();
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   /// Verifie la permission de superposition au demarrage
@@ -260,7 +308,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _audioService.stopRecording();
       await CobaltForegroundService().updateNotification(
         title: 'Cobalt Task',
-        text: 'En \u00e9coute...',
+        text: '',
         isRecording: false,
       );
       return;
@@ -288,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       print('[HomeScreen] Notification mic: Enregistrement arrete');
       await fg.updateNotification(
         title: 'Cobalt Task',
-        text: 'En \u00e9coute...',
+        text: '',
         isRecording: false,
       );
     } else {
@@ -316,6 +364,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // ignore: avoid_print
       print('APP: Retour au premier plan - retry des transcriptions en attente');
       _audioService.retryPendingTranscriptions();
+      _audioService.triggerBleReconnect();
       _databaseService.refreshStream();
       // Log overlay permission status on resume (user may have just granted it)
       OverlayPermissionService.canDrawOverlays().then((granted) {
@@ -325,6 +374,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // Traiter les validations de contacts en attente
       _processPendingValidations();
     }
+  }
+
+  Future<void> _checkNotificationListenerPermission() async {
+    if (!mounted) return;
+    final enabled = await IncomingHistoryService.isEnabled();
+    if (!mounted || enabled) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(
+      content: const Text('Activez l\'écoute des notifications pour voir vos messages entrants.'),
+      backgroundColor: const Color(0xFF5D4037),
+      duration: const Duration(seconds: 8),
+      action: SnackBarAction(
+        label: 'ACTIVER',
+        textColor: AppColors.accent,
+        onPressed: () => IncomingHistoryService.requestPermission(),
+      ),
+    ));
   }
 
   /// Traite les validations de contacts en attente (fuzzy match a confirmer)
@@ -416,6 +483,52 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     onTap: () => setState(() => selectedIndex = i),
                   ),
                 ],
+                const SizedBox(height: 8),
+                // Option "Choisir dans la liste complète"
+                InkWell(
+                  onTap: () async {
+                    final contacts = _contactLookupService.allContacts;
+                    if (contacts.isEmpty) return;
+                    final picked = await showModalBottomSheet<int>(
+                      context: context,
+                      backgroundColor: AppColors.surface,
+                      isScrollControlled: true,
+                      builder: (ctx) => _FullContactPicker(contacts: contacts),
+                    );
+                    if (picked != null) {
+                      final c = contacts[picked];
+                      final phone = c.phones.first.number;
+                      topContacts.add(ContactLookupResult(
+                        found: true,
+                        displayName: c.displayName,
+                        phoneNumber: phone,
+                        confidence: 1.0,
+                      ));
+                      setState(() => selectedIndex = topContacts.length - 1);
+                    }
+                  },
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.contacts, size: 20, color: AppColors.textSecondary),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text('Choisir dans la liste complète',
+                              style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        SizedBox(width: 4),
+                        Icon(Icons.chevron_right, size: 18, color: AppColors.textSecondary),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
             actions: [
@@ -507,13 +620,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             elevation: 0,
             scrolledUnderElevation: 0,
             centerTitle: false,
-            title: const Text('Cobalt Task', style: AppTextStyles.heading),
+            title: GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              ),
+              child: const Text('Cobalt Task', style: AppTextStyles.heading),
+            ),
             actions: [
               _buildTransferIndicator(),
-              _buildBatteryIndicator(),
-              _buildPayPalIndicator(),
+              _buildMessagesIndicator(),
+              _buildFintectureIndicator(),
               _buildSpotifyIndicator(),
               _buildGoogleIndicator(),
+              _buildBatteryIndicator(),
               BleStatusIndicator(
                 audioService: _audioService,
                 onScanRequested: _scanAndPickDevice,
@@ -526,26 +646,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildPayPalIndicator() {
-    return StreamBuilder<bool>(
-      stream: _paypalService.configuredStream,
-      initialData: _paypalService.isConfigured,
+  Widget _buildMessagesIndicator() {
+    return StreamBuilder<int>(
+      stream: _messageAggregator.unreadStream,
+      initialData: _messageAggregator.unreadCount,
       builder: (context, snapshot) {
-        final isConfigured = snapshot.data ?? false;
+        final unread = snapshot.data ?? 0;
 
         return Tooltip(
-          message: isConfigured ? 'PayPal connecté' : 'Configurer PayPal',
+          message: 'Messages entrants',
           child: InkWell(
-            onTap: () => _showPayPalMenu(context, isConfigured),
+            onTap: () => _showMessagesSheet(context),
             borderRadius: BorderRadius.circular(20),
             child: Padding(
               padding: const EdgeInsets.all(8.0),
-              child: Icon(
-                Icons.attach_money,
-                color: isConfigured
-                    ? const Color(0xFF0070BA)
-                    : AppColors.textSecondary,
-                size: 22,
+              child: Badge(
+                isLabelVisible: unread > 0,
+                label: Text('$unread', style: const TextStyle(fontSize: 9, color: Colors.white)),
+                child: Icon(
+                  Icons.chat_bubble_outline,
+                  size: 20,
+                  color: unread > 0 ? AppColors.accent : AppColors.textSecondary,
+                ),
               ),
             ),
           ),
@@ -554,143 +676,85 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _showPayPalMenu(BuildContext context, bool isConfigured) {
-    final clientIdController = TextEditingController();
-    final secretController = TextEditingController();
+  void _showMessagesSheet(BuildContext context) {
+    _messageAggregator.markAllRead();
+    final draggableController = DraggableScrollableController();
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+      builder: (sheetContext) => GestureDetector(
+        onTap: () => Navigator.pop(sheetContext),
+        behavior: HitTestBehavior.opaque,
+        child: GestureDetector(
+          onTap: () {},
+          child: DraggableScrollableSheet(
+            controller: draggableController,
+            initialChildSize: 0.45,
+            minChildSize: 0.25,
+            maxChildSize: 0.92,
+            builder: (context, scrollController) => _MessagesSheetContent(
+              scrollController: scrollController,
+              aggregator: _messageAggregator,
+              draggableController: draggableController,
+            ),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (isConfigured) ...[
-                const ListTile(
-                  leading: Icon(Icons.check_circle, color: Color(0xFF0070BA)),
-                  title: Text('PayPal connecté', style: AppTextStyles.noteText),
-                  subtitle: Text(
-                    'Paiements vocaux activés',
-                    style: AppTextStyles.metadata,
-                  ),
-                ),
-                const Divider(color: AppColors.border),
-                ListTile(
-                  leading: const Icon(Icons.logout, color: AppColors.textSecondary),
-                  title: const Text('Déconnecter PayPal',
-                      style: AppTextStyles.noteText),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    _paypalService.clearCredentials();
-                  },
-                ),
-              ] else ...[
-                const ListTile(
-                  leading: Icon(Icons.money_off, color: AppColors.textSecondary),
-                  title: Text('PayPal non configuré', style: AppTextStyles.noteText),
-                  subtitle: Text(
-                    'Entrez vos identifiants API PayPal pour activer les paiements vocaux',
-                    style: AppTextStyles.metadata,
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: InkWell(
-                    onTap: () async {
-                      final uri = Uri.parse('https://developer.paypal.com/dashboard/applications/live');
-                      if (await canLaunchUrl(uri)) {
-                        await launchUrl(uri, mode: LaunchMode.externalApplication);
-                      }
-                    },
-                    child: const Row(
-                      children: [
-                        Icon(Icons.open_in_new, size: 16, color: Color(0xFF0070BA)),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Créer une app sur developer.paypal.com → Apps & Credentials → Create App',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF0070BA),
-                              decoration: TextDecoration.underline,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const Divider(color: AppColors.border),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: TextField(
-                    controller: clientIdController,
-                    decoration: const InputDecoration(
-                      labelText: 'Client ID',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.key),
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: TextField(
-                    controller: secretController,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Secret',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.lock),
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () async {
-                        final clientId = clientIdController.text.trim();
-                        final secret = secretController.text.trim();
-                        if (clientId.isEmpty || secret.isEmpty) return;
+        ),
+      ),
+    );
+  }
 
-                        final messenger = ScaffoldMessenger.of(this.context);
-                        final success = await _paypalService.saveCredentials(clientId, secret);
-                        if (!sheetContext.mounted) return;
+  Widget _buildFintectureIndicator() {
+    return StreamBuilder<bool>(
+      stream: _fintectureService.configuredStream,
+      initialData: false,
+      builder: (context, snapshot) {
+        return Tooltip(
+          message: 'Paiements',
+          child: InkWell(
+            onTap: () => _showFintectureMenu(context),
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: FutureBuilder<bool>(
+                future: _fintectureService.hasIban(),
+                builder: (context, ibanSnap) {
+                  final hasIban = ibanSnap.data ?? false;
+                  return Icon(
+                    Icons.attach_money,
+                    color: hasIban
+                        ? const Color(0xFF00C471)
+                        : AppColors.textSecondary,
+                    size: 22,
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 
-                        Navigator.pop(sheetContext);
-                        if (success) {
-                          messenger.showSnackBar(
-                            const SnackBar(
-                              content: Text('PayPal connecté !'),
-                              backgroundColor: Color(0xFF0070BA),
-                            ),
-                          );
-                        } else {
-                          messenger.showSnackBar(
-                            const SnackBar(
-                              content: Text('Identifiants invalides'),
-                              backgroundColor: Colors.red,
-                            ),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.login),
-                      label: const Text('Connecter'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0070BA),
-                        foregroundColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ],
+  void _showFintectureMenu(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => GestureDetector(
+        onTap: () => Navigator.pop(sheetContext),
+        behavior: HitTestBehavior.opaque,
+        child: GestureDetector(
+          onTap: () {},
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.5,
+            minChildSize: 0.3,
+            maxChildSize: 0.92,
+            builder: (context, scrollController) => _FintectureSheetContent(
+              scrollController: scrollController,
+              fintectureService: _fintectureService,
+            ),
           ),
         ),
       ),
@@ -730,84 +794,45 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       context: context,
       backgroundColor: AppColors.surface,
       builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isConnected) ...[
-              ListTile(
-                leading: const Icon(Icons.music_note, color: Color(0xFF1DB954)),
-                title: const Text('Spotify connecte', style: AppTextStyles.noteText),
-                subtitle: const Text(
-                  'Controle via API Web (fonctionne ecran verrouille)',
-                  style: AppTextStyles.metadata,
-                ),
+        child: isConnected
+            ? _SpotifyPlayerSheet(audioService: _audioService)
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Text(
+                      'Connectez Spotify pour controler la musique par la voix',
+                      style: AppTextStyles.metadata,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.login, size: 18),
+                        label: const Text('Connecter Spotify'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1DB954),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          Future.delayed(const Duration(milliseconds: 500), () {
+                            _audioService.connectSpotify();
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              const Divider(color: AppColors.border),
-              FutureBuilder<Map<String, dynamic>?>(
-                future: _audioService.getSpotifyPlayerState(),
-                builder: (context, snapshot) {
-                  final state = snapshot.data;
-                  if (state == null) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Text('Aucune lecture en cours',
-                          style: AppTextStyles.metadata),
-                    );
-                  }
-                  final item = state['item'] as Map<String, dynamic>?;
-                  final trackName = item?['name'] as String? ?? 'Inconnu';
-                  final artists = (item?['artists'] as List?)
-                          ?.map((a) => a['name'])
-                          .join(', ') ??
-                      '';
-                  return ListTile(
-                    leading:
-                        const Icon(Icons.play_circle, color: Color(0xFF1DB954)),
-                    title: Text(trackName, style: AppTextStyles.noteText),
-                    subtitle: Text(artists, style: AppTextStyles.metadata),
-                  );
-                },
-              ),
-              const Divider(color: AppColors.border),
-              ListTile(
-                leading: const Icon(Icons.logout, color: AppColors.textSecondary),
-                title: const Text('Deconnecter Spotify',
-                    style: AppTextStyles.noteText),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _audioService.disconnectSpotify();
-                },
-              ),
-            ] else ...[
-              ListTile(
-                leading: const Icon(Icons.music_off, color: AppColors.textSecondary),
-                title: const Text('Spotify non connecte', style: AppTextStyles.noteText),
-                subtitle: const Text(
-                  'Connectez-vous pour controler la musique par la voix sans allumer l\'ecran',
-                  style: AppTextStyles.metadata,
-                ),
-              ),
-              const Divider(color: AppColors.border),
-              ListTile(
-                leading: const Icon(Icons.login, color: Color(0xFF1DB954)),
-                title: const Text('Connecter Spotify',
-                    style: AppTextStyles.noteText),
-                onTap: () {
-                  // ignore: avoid_print
-                  print('[UI] Tap Connecter Spotify - fermeture bottom sheet...');
-                  Navigator.pop(sheetContext);
-                  // Délai pour laisser l'animation de fermeture du bottom sheet
-                  // se terminer avant de lancer le flux OAuth (appel plateforme lourd)
-                  Future.delayed(const Duration(milliseconds: 500), () {
-                    // ignore: avoid_print
-                    print('[UI] Bottom sheet fermé, lancement connectSpotify...');
-                    _audioService.connectSpotify();
-                  });
-                },
-              ),
-            ],
-          ],
-        ),
       ),
     );
   }
@@ -841,144 +866,84 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _showGoogleMenu(BuildContext context, bool isConnected) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.surface,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isConnected) ...[
-              ListTile(
-                leading: Icon(Icons.cloud_done, color: AppColors.bleConnected),
-                title: Text(
-                  _audioService.googleUserName ?? 'Google',
-                  style: AppTextStyles.noteText,
-                ),
-                subtitle: Text(
-                  _audioService.googleUserEmail ?? '',
+    if (isConnected) {
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (context) => GestureDetector(
+          onTap: () => Navigator.pop(context),
+          behavior: HitTestBehavior.opaque,
+          child: GestureDetector(
+            onTap: () {}, // empêche la propagation vers le parent
+            child: DraggableScrollableSheet(
+              initialChildSize: 0.45,
+              minChildSize: 0.25,
+              maxChildSize: 0.92,
+              expand: false,
+              builder: (context, scrollController) => _GoogleSheet(
+                audioService: _audioService,
+                scrollController: scrollController,
+                getCategoryIcon: _getCategoryIcon,
+                getCategoryColor: _getCategoryColor,
+                getCategoryLabel: _getCategoryLabel,
+              ),
+            ),
+          ),
+        ),
+      );
+    } else {
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: AppColors.surface,
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text(
+                  'Connectez Google pour synchroniser Tasks, Calendar, Contacts et Docs',
                   style: AppTextStyles.metadata,
+                  textAlign: TextAlign.center,
                 ),
               ),
-              const Divider(color: AppColors.border),
-              _buildGoogleHistory(),
-              const Divider(color: AppColors.border),
-              ListTile(
-                leading: const Icon(Icons.logout, color: AppColors.textSecondary),
-                title: const Text('Deconnecter Google', style: AppTextStyles.noteText),
-                onTap: () async {
-                  await _audioService.signOutGoogle();
-                  if (mounted) Navigator.pop(context);
-                },
-              ),
-            ] else ...[
-              ListTile(
-                leading: const Icon(Icons.cloud_off, color: AppColors.textSecondary),
-                title: const Text('Non connecte', style: AppTextStyles.noteText),
-                subtitle: const Text(
-                  'Connectez-vous pour synchroniser avec Google Tasks, Calendar, Contacts et Docs',
-                  style: AppTextStyles.metadata,
-                ),
-              ),
-              const Divider(color: AppColors.border),
-              ListTile(
-                leading: const Icon(Icons.login, color: AppColors.accent),
-                title: const Text('Connecter Google', style: AppTextStyles.noteText),
-                onTap: () async {
-                  final messenger = ScaffoldMessenger.of(context);
-                  Navigator.pop(context);
-                  final success = await _audioService.signInGoogle();
-                  if (mounted && success) {
-                    messenger.showSnackBar(
-                      const SnackBar(
-                        content: Text('Connecte a Google!'),
-                        backgroundColor: Colors.green,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.login, size: 18),
+                    label: const Text('Connecter Google'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4285F4),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                    );
-                  }
-                },
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(sheetContext);
+                      Navigator.pop(sheetContext);
+                      final success = await _audioService.signInGoogle();
+                      if (mounted && success) {
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('Connecte a Google!'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ),
               ),
             ],
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildGoogleHistory() {
-    return StreamBuilder<List<SyncAction>>(
-      stream: _audioService.googleHistoryStream,
-      initialData: _audioService.googleActionHistory,
-      builder: (context, snapshot) {
-        final actions = snapshot.data ?? [];
-
-        if (actions.isEmpty) {
-          return const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Aucune action recente',
-              style: AppTextStyles.metadata,
-            ),
-          );
-        }
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                'Dernieres synchronisations',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ),
-            ...actions.take(5).map((action) => Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Row(
-                children: [
-                  Icon(
-                    action.success ? Icons.check_circle : Icons.error,
-                    size: 14,
-                    color: action.success ? AppColors.bleConnected : Colors.red,
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    _getCategoryIcon(action.category),
-                    size: 14,
-                    color: _getCategoryColor(action.category),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _getCategoryLabel(action.category),
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: _getCategoryColor(action.category),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      action.title,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textPrimary,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            )),
-          ],
-        );
-      },
-    );
+      );
+    }
   }
 
   IconData _getCategoryIcon(NoteCategory category) {
@@ -1134,8 +1099,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final isRecording = snapshot.data ?? false;
 
         return GestureDetector(
-          onLongPressStart: (_) => _startPTTRecording(),
-          onLongPressEnd: (_) => _stopPTTRecording(),
+          // Déclenchement instantané au toucher (pas de délai long press)
+          onTapDown: (_) {
+            if (!isRecording) _startPTTRecording();
+          },
+          onTapUp: (_) {
+            if (isRecording) _stopPTTRecording();
+          },
+          onTapCancel: () {
+            if (isRecording) _stopPTTRecording();
+          },
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             width: isRecording ? 80 : 64,
@@ -1179,6 +1152,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _audioService.stopRecording();
   }
 
+  /// Renvoie true si la note doit apparaître dans la liste.
+  ///
+  /// Seules les tâches tracées sont affichées : celles qui créent un enregistrement
+  /// dans un service externe (calendrier, SMS, messagerie, paiement) ou un mémo.
+  /// Les actions directes (alarme, timer, appel, GPS, média, système) sont
+  /// auto-validées et n'ont pas besoin d'être listées.
+  bool _isTrackedAction(VoiceNote note) {
+    // Toujours afficher les notes en cours ou en erreur
+    if (note.isProcessing || note.errorMessage != null) return true;
+
+    final json = note.actionJson;
+    if (json == null || json.isEmpty) {
+      // Ancienne note sans actionJson : afficher par défaut
+      return true;
+    }
+
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      final intent = map['intent'] as String? ?? 'none';
+      const directActions = {
+        'alarm',
+        'timer',
+        'system_control',
+        'call',
+        'navigation',
+        'media',
+        'app_launch',
+      };
+      return !directActions.contains(intent);
+    } catch (_) {
+      return true;
+    }
+  }
+
   Widget _buildBody() {
     return StreamBuilder<List<VoiceNote>>(
       stream: _databaseService.notesStream,
@@ -1188,7 +1195,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           return _buildLoadingState();
         }
 
-        final notes = snapshot.data!;
+        final allNotes = snapshot.data!;
+        // Afficher uniquement les tâches tracées (actions persistantes dans des services externes)
+        // Les actions directes (alarme, timer, média, appel, navigation, appLaunch, contrôle système)
+        // sont auto-validées et n'ont pas besoin d'être listées.
+        final notes = allNotes.where(_isTrackedAction).toList();
         if (notes.isEmpty) {
           return _buildEmptyState();
         }
@@ -1289,14 +1300,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // DEVICE PICKER
   // ---------------------------------------------------------------------------
 
-  void _scanAndPickDevice() {
-    _audioService.startBleScan();
+  Future<void> _scanAndPickDevice() async {
+    final btState = await FlutterBluePlus.adapterState.first;
+    if (btState != BluetoothAdapterState.on) {
+      if (mounted) _showBluetoothRequiredDialog();
+      return;
+    }
 
+    // Démarre le scan rapide continu
+    _audioService.startBrowseScan();
+
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
       builder: (context) => _DevicePickerSheet(audioService: _audioService),
-    );
+    ).whenComplete(() {
+      // Arrête le scan quand la fiche se ferme
+      _audioService.stopBrowseScan();
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1330,10 +1352,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 /// Device Picker Bottom Sheet
 /// =============================================================================
 
-class _DevicePickerSheet extends StatelessWidget {
+class _DevicePickerSheet extends StatefulWidget {
   final AudioService audioService;
 
   const _DevicePickerSheet({required this.audioService});
+
+  @override
+  State<_DevicePickerSheet> createState() => _DevicePickerSheetState();
+}
+
+class _DevicePickerSheetState extends State<_DevicePickerSheet> {
+  bool _timedOut = false;
+  late final Timer _timeoutTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Après 10s sans résultat, afficher un diagnostic
+    _timeoutTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted) setState(() => _timedOut = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timeoutTimer.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1341,54 +1386,107 @@ class _DevicePickerSheet extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Montres disponibles',
-              style: AppTextStyles.heading,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Row(
+              children: [
+                const Text('Appareils à proximité', style: AppTextStyles.heading),
+                const Spacer(),
+                const SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.accent),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('Scan', style: AppTextStyles.metadata.copyWith(
+                  color: AppColors.accent, fontSize: 11)),
+              ],
             ),
           ),
           const Divider(color: AppColors.border),
           StreamBuilder<List<ScanResult>>(
-            stream: audioService.discoveredDevicesStream,
-            initialData: audioService.discoveredDevices,
+            stream: widget.audioService.discoveredDevicesStream,
+            initialData: widget.audioService.discoveredDevices,
             builder: (context, snapshot) {
               final devices = snapshot.data ?? [];
 
+              // Dès qu'on a des devices, annuler le timeout
+              if (devices.isNotEmpty && _timedOut) {
+                _timedOut = false;
+              }
+
               if (devices.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.all(32),
+                return Padding(
+                  padding: const EdgeInsets.all(24),
                   child: Column(
                     children: [
-                      SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(AppColors.accent),
+                      if (!_timedOut) ...[
+                        const SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(AppColors.accent),
+                          ),
                         ),
-                      ),
-                      SizedBox(height: 16),
-                      Text(
-                        'Recherche en cours...',
-                        style: AppTextStyles.metadata,
-                      ),
+                        const SizedBox(height: 12),
+                        const Text('Recherche en cours...', style: AppTextStyles.metadata),
+                      ] else ...[
+                        const Icon(Icons.bluetooth_searching, size: 36, color: AppColors.textSecondary),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Aucun appareil trouvé',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Vérifiez que :\n'
+                          '• La montre est allumée et à proximité\n'
+                          '• Le Bluetooth est activé\n'
+                          '• La localisation est activée (requis par Android pour le BLE)\n'
+                          '• Les permissions Bluetooth sont accordées',
+                          style: TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.5),
+                        ),
+                        const SizedBox(height: 12),
+                        TextButton.icon(
+                          onPressed: () {
+                            setState(() => _timedOut = false);
+                            _timeoutTimer.cancel();
+                            widget.audioService.startBrowseScan();
+                            // Nouveau timeout
+                            Timer(const Duration(seconds: 10), () {
+                              if (mounted) setState(() => _timedOut = true);
+                            });
+                          },
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('Relancer le scan'),
+                          style: TextButton.styleFrom(foregroundColor: AppColors.accent),
+                        ),
+                      ],
                     ],
                   ),
                 );
               }
 
-              return ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: devices.length,
-                itemBuilder: (context, index) =>
-                    _buildDeviceTile(context, devices[index]),
+              return ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.5,
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: devices.length,
+                  itemBuilder: (context, index) =>
+                      _buildDeviceTile(context, devices[index]),
+                ),
               );
             },
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
         ],
       ),
     );
@@ -1398,15 +1496,50 @@ class _DevicePickerSheet extends StatelessWidget {
     final advName = result.advertisementData.advName;
     final platformName = result.device.platformName;
     final displayName = advName.isNotEmpty ? advName : platformName;
+    final isCobalt = displayName.toLowerCase().startsWith('cobalt');
+    final isCurrentlyConnected = widget.audioService.connectedDeviceName == displayName &&
+        widget.audioService.bleConnectionState == BleConnectionState.connected;
+    final rssi = result.rssi;
+
+    final signalIcon = rssi > -60
+        ? Icons.signal_cellular_alt
+        : rssi > -80
+            ? Icons.signal_cellular_alt_2_bar
+            : Icons.signal_cellular_alt_1_bar;
+    final signalColor = rssi > -60
+        ? AppColors.bleConnected
+        : rssi > -80
+            ? AppColors.bleConnecting
+            : AppColors.textSecondary;
 
     return ListTile(
-      leading: const Icon(Icons.watch, color: AppColors.accent),
-      title: Text(displayName, style: AppTextStyles.noteText),
-      trailing: const Icon(Icons.chevron_right, color: AppColors.textSecondary),
-      onTap: () {
+      leading: Icon(
+        isCobalt ? Icons.watch : Icons.bluetooth,
+        color: isCurrentlyConnected
+            ? AppColors.bleConnected
+            : isCobalt
+                ? AppColors.accent
+                : AppColors.textTertiary,
+        size: isCobalt ? 24 : 20,
+      ),
+      title: Text(
+        displayName,
+        style: isCobalt
+            ? AppTextStyles.noteText
+            : AppTextStyles.metadata.copyWith(color: AppColors.textSecondary),
+      ),
+      subtitle: Text(
+        isCurrentlyConnected ? 'Connecté' : '$rssi dBm',
+        style: AppTextStyles.metadata,
+      ),
+      trailing: isCurrentlyConnected
+          ? const Icon(Icons.check_circle, color: AppColors.bleConnected)
+          : Icon(signalIcon, color: signalColor, size: 20),
+      onTap: isCobalt ? () {
         Navigator.pop(context);
-        audioService.connectToBleDevice(result.device);
-      },
+        widget.audioService.stopBrowseScan();
+        widget.audioService.connectToBleDevice(result.device, deviceName: displayName);
+      } : null,
     );
   }
 }
@@ -1471,6 +1604,1305 @@ class _ContactOption extends StatelessWidget {
               const Icon(Icons.check_circle, size: 20, color: AppColors.accent),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// =============================================================================
+/// Full Contact Picker (bottom sheet with search)
+/// =============================================================================
+
+class _FullContactPicker extends StatefulWidget {
+  final List<Contact> contacts;
+  const _FullContactPicker({required this.contacts});
+
+  @override
+  State<_FullContactPicker> createState() => _FullContactPickerState();
+}
+
+class _FullContactPickerState extends State<_FullContactPicker> {
+  String _search = '';
+
+  List<Contact> get _filtered {
+    if (_search.isEmpty) return widget.contacts;
+    final lower = _search.toLowerCase();
+    return widget.contacts
+        .where((c) => c.displayName.toLowerCase().contains(lower))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.7,
+      minChildSize: 0.4,
+      maxChildSize: 0.92,
+      expand: false,
+      builder: (context, scrollController) => Column(
+        children: [
+          // Drag handle
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textTertiary.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          // Search bar
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: TextField(
+              autofocus: true,
+              style: AppTextStyles.noteText,
+              decoration: InputDecoration(
+                hintText: 'Rechercher un contact...',
+                hintStyle: AppTextStyles.metadata,
+                prefixIcon: const Icon(Icons.search, size: 20, color: AppColors.textSecondary),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.border),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: AppColors.accent),
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                isDense: true,
+              ),
+              onChanged: (v) => setState(() => _search = v),
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Contact list
+          Expanded(
+            child: ListView.builder(
+              controller: scrollController,
+              itemCount: _filtered.length,
+              itemBuilder: (context, index) {
+                final c = _filtered[index];
+                final phone = c.phones.isNotEmpty ? c.phones.first.number : '';
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.person_outline, size: 20, color: AppColors.textSecondary),
+                  title: Text(c.displayName, style: AppTextStyles.noteText),
+                  subtitle: Text(phone, style: AppTextStyles.metadata),
+                  onTap: () {
+                    // Return the index in the original list
+                    final origIdx = widget.contacts.indexOf(c);
+                    Navigator.pop(context, origIdx);
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// =============================================================================
+/// Google Sheet (compact header + full scrollable history)
+/// =============================================================================
+
+class _GoogleSheet extends StatelessWidget {
+  final AudioService audioService;
+  final ScrollController scrollController;
+  final IconData Function(NoteCategory) getCategoryIcon;
+  final Color Function(NoteCategory) getCategoryColor;
+  final String Function(NoteCategory) getCategoryLabel;
+
+  const _GoogleSheet({
+    required this.audioService,
+    required this.scrollController,
+    required this.getCategoryIcon,
+    required this.getCategoryColor,
+    required this.getCategoryLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textTertiary.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          // Header: Google label + email + logout icon
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.cloud_done, color: Color(0xFF4285F4), size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        audioService.googleUserName ?? 'Google',
+                        style: const TextStyle(
+                          color: Color(0xFF4285F4),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                      if (audioService.googleUserEmail != null)
+                        Text(
+                          audioService.googleUserEmail!,
+                          style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await audioService.signOutGoogle();
+                  },
+                  child: const Icon(Icons.logout, color: Colors.red, size: 18),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: AppColors.border, height: 1),
+          // Actions history (all, scrollable)
+          Expanded(
+            child: StreamBuilder<List<SyncAction>>(
+              stream: audioService.googleHistoryStream,
+              initialData: audioService.googleActionHistory,
+              builder: (context, snapshot) {
+                final actions = snapshot.data ?? [];
+
+                if (actions.isEmpty) {
+                  return const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.history, size: 40, color: AppColors.textTertiary),
+                        SizedBox(height: 8),
+                        Text('Aucune action', style: AppTextStyles.metadata),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: scrollController,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: actions.length,
+                  itemBuilder: (context, index) {
+                    final action = actions[index];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+                      child: Row(
+                        children: [
+                          Icon(
+                            action.success ? Icons.check_circle : Icons.error,
+                            size: 14,
+                            color: action.success ? AppColors.bleConnected : Colors.red,
+                          ),
+                          const SizedBox(width: 8),
+                          Icon(
+                            getCategoryIcon(action.category),
+                            size: 14,
+                            color: getCategoryColor(action.category),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            getCategoryLabel(action.category),
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: getCategoryColor(action.category),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              action.title,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textPrimary,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// =============================================================================
+/// Spotify Player Sheet (compact avec contrôles)
+class _SpotifyPlayerSheet extends StatefulWidget {
+  final AudioService audioService;
+  const _SpotifyPlayerSheet({required this.audioService});
+
+  @override
+  State<_SpotifyPlayerSheet> createState() => _SpotifyPlayerSheetState();
+}
+
+class _SpotifyPlayerSheetState extends State<_SpotifyPlayerSheet> {
+  Map<String, dynamic>? _state;
+  bool _isPlaying = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final state = await widget.audioService.getSpotifyPlayerState();
+    if (!mounted) return;
+    setState(() {
+      _state = state;
+      _isPlaying = state?['is_playing'] as bool? ?? false;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = _state?['item'] as Map<String, dynamic>?;
+    final trackName = item?['name'] as String? ?? '';
+    final artists = (item?['artists'] as List?)
+            ?.map((a) => a['name'])
+            .join(', ') ??
+        '';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Header: Spotify label + disconnect icon
+          Row(
+            children: [
+              const Icon(Icons.music_note, color: Color(0xFF1DB954), size: 18),
+              const SizedBox(width: 6),
+              const Text('Spotify',
+                  style: TextStyle(
+                    color: Color(0xFF1DB954),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  )),
+              const Spacer(),
+              // Device switcher
+              GestureDetector(
+                onTap: () => _showDevicePicker(context),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6),
+                  child: Icon(Icons.speaker_group, color: Color(0xFF1DB954), size: 20),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Disconnect
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.audioService.disconnectSpotify();
+                },
+                child: const Icon(Icons.logout, color: Colors.red, size: 18),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Track info
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: SizedBox(
+                width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1DB954)),
+              ),
+            )
+          else if (trackName.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('Aucune lecture en cours', style: AppTextStyles.metadata),
+            )
+          else ...[
+            Text(trackName,
+                style: AppTextStyles.noteText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+            if (artists.isNotEmpty)
+              Text(artists,
+                  style: AppTextStyles.metadata,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+          ],
+          const SizedBox(height: 12),
+
+          // Controls — Previous, Play/Pause, Next
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.background.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.skip_previous_rounded),
+                  color: AppColors.textPrimary,
+                  iconSize: 32,
+                  tooltip: 'Piste précédente',
+                  onPressed: () async {
+                    await widget.audioService.spotifyPrevious();
+                    Future.delayed(const Duration(milliseconds: 500), _refresh);
+                  },
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  icon: Icon(_isPlaying
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_filled),
+                  color: const Color(0xFF1DB954),
+                  iconSize: 52,
+                  tooltip: _isPlaying ? 'Pause' : 'Lecture',
+                  onPressed: () async {
+                    if (_isPlaying) {
+                      await widget.audioService.spotifyPause();
+                    } else {
+                      await widget.audioService.spotifyPlay();
+                    }
+                    setState(() => _isPlaying = !_isPlaying);
+                  },
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  icon: const Icon(Icons.skip_next_rounded),
+                  color: AppColors.textPrimary,
+                  iconSize: 32,
+                  tooltip: 'Piste suivante',
+                  onPressed: () async {
+                    await widget.audioService.spotifyNext();
+                    Future.delayed(const Duration(milliseconds: 500), _refresh);
+                  },
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDevicePicker(BuildContext context) async {
+    final devices = await widget.audioService.spotifyGetDevices();
+    if (devices.isEmpty || !context.mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Écouter sur', style: AppTextStyles.heading),
+              ),
+            ),
+            const Divider(color: AppColors.border, height: 1),
+            ...devices.map((device) {
+              final name = device['name'] as String? ?? '?';
+              final type = device['type'] as String? ?? '';
+              final isActive = device['is_active'] as bool? ?? false;
+              final id = device['id'] as String? ?? '';
+              final icon = switch (type.toLowerCase()) {
+                'smartphone' => Icons.smartphone,
+                'computer' => Icons.computer,
+                'speaker' => Icons.speaker,
+                'tv' => Icons.tv,
+                'cast_audio' || 'castaudio' => Icons.cast,
+                _ => Icons.devices,
+              };
+
+              return ListTile(
+                leading: Icon(icon,
+                    color: isActive ? const Color(0xFF1DB954) : AppColors.textSecondary,
+                    size: 22),
+                title: Text(name, style: AppTextStyles.noteText.copyWith(
+                  color: isActive ? const Color(0xFF1DB954) : AppColors.textPrimary,
+                )),
+                trailing: isActive
+                    ? const Icon(Icons.volume_up, color: Color(0xFF1DB954), size: 18)
+                    : null,
+                onTap: isActive ? null : () async {
+                  Navigator.pop(ctx);
+                  await widget.audioService.spotifyTransferPlayback(id);
+                  _refresh();
+                },
+              );
+            }),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Messages Sheet Content (bottom sheet draggable)
+/// =============================================================================
+
+class _MessagesSheetContent extends StatefulWidget {
+  final ScrollController scrollController;
+  final MessageAggregatorService aggregator;
+  final DraggableScrollableController? draggableController;
+
+  const _MessagesSheetContent({
+    required this.scrollController,
+    required this.aggregator,
+    this.draggableController,
+  });
+
+  @override
+  State<_MessagesSheetContent> createState() => _MessagesSheetContentState();
+}
+
+class _MessagesSheetContentState extends State<_MessagesSheetContent> {
+  /// Index du message en mode réponse (-1 = aucun)
+  int _replyIndex = -1;
+  IncomingMessage? _replyMsg;
+  final _replyController = TextEditingController();
+  final _replyFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _replyController.dispose();
+    _replyFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textTertiary.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('Messages', style: AppTextStyles.heading),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 20, color: AppColors.textSecondary),
+                  tooltip: 'Tout effacer',
+                  onPressed: () {
+                    widget.aggregator.clearAll();
+                    setState(() {});
+                  },
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: AppColors.border, height: 1),
+          // Messages list
+          Expanded(
+            child: StreamBuilder<List<IncomingMessage>>(
+              stream: widget.aggregator.messagesStream,
+              initialData: widget.aggregator.messages,
+              builder: (context, snapshot) {
+                final messages = snapshot.data ?? [];
+
+                if (messages.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.chat_bubble_outline, size: 48, color: AppColors.textTertiary),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Aucun message',
+                          style: AppTextStyles.metadata,
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: widget.scrollController,
+                  padding: const EdgeInsets.only(top: 4, bottom: 16),
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = messages[index];
+
+                    return Dismissible(
+                      key: ValueKey(msg.id),
+                      background: Container(
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.only(left: 20),
+                        color: AppColors.accent.withValues(alpha: 0.15),
+                        child: const Icon(Icons.reply, color: AppColors.accent),
+                      ),
+                      secondaryBackground: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        color: Colors.red.withValues(alpha: 0.12),
+                        child: const Icon(Icons.delete_outline, color: Colors.red),
+                      ),
+                      confirmDismiss: (direction) async {
+                        if (direction == DismissDirection.endToStart) {
+                          // Swipe gauche → supprimer
+                          return true;
+                        }
+                        // Swipe droite → répondre (expand plein écran pour le clavier)
+                        setState(() {
+                          _replyIndex = index;
+                          _replyMsg = msg;
+                        });
+                        widget.draggableController?.animateTo(
+                          0.92,
+                          duration: const Duration(milliseconds: 250),
+                          curve: Curves.easeOut,
+                        );
+                        Future.delayed(const Duration(milliseconds: 150), () {
+                          _replyFocus.requestFocus();
+                        });
+                        return false;
+                      },
+                      onDismissed: (direction) {
+                        _removeMessage(msg.id);
+                      },
+                      child: _buildMessageTile(msg),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          // Reply bar fixée en bas (au-dessus du clavier)
+          if (_replyMsg != null)
+            _buildBottomReplyBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomReplyBar() {
+    final msg = _replyMsg!;
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 12, right: 12, top: 6,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 8,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Contexte : nom + aperçu du message original
+          Row(
+            children: [
+              const Icon(Icons.reply, size: 14, color: AppColors.accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: msg.senderName,
+                        style: const TextStyle(
+                          color: AppColors.accent,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                      TextSpan(
+                        text: '  ${msg.messagePreview}',
+                        style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                      ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _replyIndex = -1;
+                    _replyMsg = null;
+                    _replyController.clear();
+                  });
+                  _replyFocus.unfocus();
+                  widget.draggableController?.animateTo(
+                    0.45,
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                  );
+                },
+                child: const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(Icons.close, size: 16, color: AppColors.textSecondary),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Champ de saisie
+          Container(
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _replyController,
+                    focusNode: _replyFocus,
+                    style: AppTextStyles.cardBody.copyWith(
+                      color: AppColors.textPrimary,
+                      fontSize: 14,
+                    ),
+                    decoration: const InputDecoration(
+                      hintText: 'Répondre par SMS...',
+                      hintStyle: AppTextStyles.metadata,
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      isDense: true,
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (text) => _sendReply(msg, text),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _sendReply(msg, _replyController.text),
+                  child: const Padding(
+                    padding: EdgeInsets.only(right: 10),
+                    child: Icon(Icons.send, size: 20, color: AppColors.accent),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const Map<String, Color> _appColors = {
+    'WhatsApp': Color(0xFF25D366),
+    'Telegram': Color(0xFF0088CC),
+    'Signal': Color(0xFF3A76F0),
+    'Messenger': Color(0xFF0084FF),
+    'Instagram': Color(0xFFE1306C),
+    'LinkedIn': Color(0xFF0A66C2),
+    'SMS': Color(0xFF757575),
+  };
+
+  Widget _buildMessageTile(IncomingMessage msg) {
+    final appColor = _appColors[msg.appSource] ?? AppColors.textSecondary;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Barre latérale colorée de l'app
+          Container(
+            width: 3,
+            height: 36,
+            margin: const EdgeInsets.only(right: 10),
+            decoration: BoxDecoration(
+              color: appColor,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Ligne 1 : nom + app source + heure
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        msg.senderName,
+                        style: AppTextStyles.cardTitle.copyWith(fontSize: 14),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      msg.appSource,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: appColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _formatTime(msg.receivedAt),
+                      style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                    ),
+                  ],
+                ),
+                // Ligne 2 : aperçu du message (2 lignes max)
+                if (msg.messagePreview.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    msg.messagePreview,
+                    style: AppTextStyles.cardBody.copyWith(fontSize: 13),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendReply(IncomingMessage msg, String text) async {
+    if (text.trim().isEmpty) return;
+
+    final trimmed = text.trim();
+    final senderName = msg.senderName;
+    final msgId = msg.id;
+
+    // Envoi systématique par SMS direct (arrière-plan, même canal que l'assistant vocal)
+    final svc = LocalSmsService();
+    await svc.initialize();
+    await svc.sendSms(
+      recipient: senderName,
+      message: trimmed,
+      forceDirect: true,
+    );
+
+    // Supprimer le message une fois répondu
+    _removeMessage(msgId);
+
+    setState(() {
+      _replyIndex = -1;
+      _replyMsg = null;
+      _replyController.clear();
+    });
+    widget.draggableController?.animateTo(
+      0.45,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _removeMessage(String id) {
+    // Access internal list via reflection-free approach:
+    // The service exposes messages as unmodifiable, so we remove via index
+    final msgs = widget.aggregator.messages;
+    final idx = msgs.toList().indexWhere((m) => m.id == id);
+    if (idx >= 0) {
+      widget.aggregator.removeAt(idx);
+    }
+  }
+
+  String _formatTime(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final msgDay = DateTime(dt.year, dt.month, dt.day);
+
+    if (msgDay == today) {
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    }
+    if (msgDay == today.subtract(const Duration(days: 1))) {
+      return 'hier';
+    }
+    return '${dt.day}/${dt.month}';
+  }
+}
+
+/// =============================================================================
+/// Fintecture Sheet Content (bottom sheet draggable)
+/// =============================================================================
+
+class _FintectureSheetContent extends StatefulWidget {
+  final ScrollController scrollController;
+  final FintectureService fintectureService;
+
+  const _FintectureSheetContent({
+    required this.scrollController,
+    required this.fintectureService,
+  });
+
+  @override
+  State<_FintectureSheetContent> createState() => _FintectureSheetContentState();
+}
+
+class _FintectureSheetContentState extends State<_FintectureSheetContent> {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textTertiary.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Text('Paiements', style: AppTextStyles.heading),
+                const Spacer(),
+                // Config IBAN
+                IconButton(
+                  icon: const Icon(Icons.account_balance, size: 20, color: AppColors.textSecondary),
+                  tooltip: 'Configurer IBAN',
+                  onPressed: () => _showIbanDialog(context),
+                ),
+                // Nouvelle demande manuelle
+                IconButton(
+                  icon: const Icon(Icons.add, size: 22, color: AppColors.accent),
+                  tooltip: 'Nouvelle demande',
+                  onPressed: () => _showNewRequestDialog(context),
+                ),
+              ],
+            ),
+          ),
+          // IBAN status
+          FutureBuilder<bool>(
+            future: widget.fintectureService.hasIban(),
+            builder: (context, snap) {
+              if (snap.data == true) {
+                return FutureBuilder<String>(
+                  future: widget.fintectureService.getMaskedIban(),
+                  builder: (context, ibanSnap) => Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.check_circle, size: 14, color: AppColors.accent),
+                        const SizedBox(width: 6),
+                        Text(
+                          'IBAN ${ibanSnap.data ?? ''}',
+                          style: AppTextStyles.metadata.copyWith(color: AppColors.accent),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber, size: 14, color: Colors.orange),
+                    const SizedBox(width: 6),
+                    Text(
+                      'IBAN non configuré',
+                      style: AppTextStyles.metadata.copyWith(color: Colors.orange),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () => _showIbanDialog(context),
+                      child: Text(
+                        'Configurer',
+                        style: AppTextStyles.metadata.copyWith(
+                          color: AppColors.accent,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+          const Divider(color: AppColors.border, height: 1),
+          // Transactions list
+          Expanded(
+            child: StreamBuilder<List<FintectureTransaction>>(
+              stream: widget.fintectureService.transactionsStream,
+              initialData: widget.fintectureService.transactions,
+              builder: (context, snapshot) {
+                final txs = snapshot.data ?? [];
+
+                if (txs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.account_balance_wallet_outlined, size: 48, color: AppColors.textTertiary),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Aucune demande de remboursement',
+                          style: AppTextStyles.metadata,
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: widget.scrollController,
+                  padding: const EdgeInsets.only(top: 4, bottom: 16),
+                  itemCount: txs.length,
+                  itemBuilder: (context, index) {
+                    final tx = txs[index];
+                    final isDone = tx.status != FintectureStatus.pending;
+
+                    return Dismissible(
+                      key: ValueKey(tx.id),
+                      direction: isDone ? DismissDirection.endToStart : DismissDirection.none,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        color: Colors.red.withValues(alpha: 0.12),
+                        child: const Icon(Icons.delete_outline, color: Colors.red),
+                      ),
+                      onDismissed: (_) => widget.fintectureService.deleteTransaction(tx.id),
+                      child: _buildTransactionTile(tx),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTransactionTile(FintectureTransaction tx) {
+    Color statusColor;
+    String statusLabel;
+    switch (tx.status) {
+      case FintectureStatus.pending:
+        statusColor = Colors.orange;
+        statusLabel = 'En attente';
+      case FintectureStatus.paid:
+        statusColor = AppColors.accent;
+        statusLabel = 'Payé';
+      case FintectureStatus.expired:
+        statusColor = Colors.red;
+        statusLabel = 'Expiré';
+      case FintectureStatus.failed:
+        statusColor = Colors.red;
+        statusLabel = 'Échoué';
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          // Status dot
+          Container(
+            width: 8,
+            height: 8,
+            margin: const EdgeInsets.only(right: 10),
+            decoration: BoxDecoration(
+              color: statusColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        tx.recipientName,
+                        style: AppTextStyles.cardTitle.copyWith(fontSize: 14),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Text(
+                      tx.formattedAmount,
+                      style: AppTextStyles.cardTitle.copyWith(
+                        fontSize: 15,
+                        color: statusColor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Row(
+                  children: [
+                    Text(
+                      statusLabel,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: statusColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (tx.note.isNotEmpty) ...[
+                      Text(
+                        ' · ${tx.note}',
+                        style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                      ),
+                    ],
+                    const Spacer(),
+                    Text(
+                      _formatTxDate(tx),
+                      style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTxDate(FintectureTransaction tx) {
+    final dt = tx.paidAt ?? tx.createdAt;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final txDay = DateTime(dt.year, dt.month, dt.day);
+
+    if (txDay == today) {
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    }
+    if (txDay == today.subtract(const Duration(days: 1))) {
+      return 'hier';
+    }
+    return '${dt.day}/${dt.month}';
+  }
+
+  void _showIbanDialog(BuildContext context) {
+    final ibanController = TextEditingController();
+    final bicController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Configurer IBAN', style: AppTextStyles.heading),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Votre IBAN est stocké localement sur cet appareil uniquement.',
+              style: AppTextStyles.metadata,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ibanController,
+              decoration: const InputDecoration(
+                labelText: 'IBAN',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.account_balance),
+                hintText: 'FR76 XXXX XXXX XXXX XXXX XXXX XXX',
+              ),
+              textCapitalization: TextCapitalization.characters,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: bicController,
+              decoration: const InputDecoration(
+                labelText: 'BIC (optionnel)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.code),
+              ),
+              textCapitalization: TextCapitalization.characters,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              final ok = await widget.fintectureService.setupUserIban(
+                ibanController.text,
+                bicController.text,
+              );
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+
+              if (ok) {
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('IBAN configuré'),
+                    backgroundColor: AppColors.accent,
+                  ),
+                );
+                setState(() {});
+              } else {
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('IBAN invalide'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Enregistrer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showNewRequestDialog(BuildContext context) {
+    final nameController = TextEditingController();
+    final amountController = TextEditingController();
+    final noteController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Demander un remboursement', style: AppTextStyles.heading),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Destinataire',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Montant (€)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.euro),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: noteController,
+              decoration: const InputDecoration(
+                labelText: 'Motif (optionnel)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.notes),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Annuler'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final name = nameController.text.trim();
+              final amount = double.tryParse(amountController.text.trim());
+              if (name.isEmpty || amount == null || amount <= 0) return;
+
+              Navigator.pop(dialogContext);
+              await widget.fintectureService.createRequestToPay(
+                recipientName: name,
+                recipientPhone: '',
+                amount: amount,
+                note: noteController.text.trim(),
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Envoyer'),
+          ),
+        ],
       ),
     );
   }

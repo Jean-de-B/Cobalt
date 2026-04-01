@@ -18,6 +18,10 @@ class AudioFeedbackService {
   final FlutterTts _tts = FlutterTts();
   bool _isInitialized = false;
   bool _enabled = true;
+  bool _isSpeaking = false;
+
+  /// True si le TTS Cobalt est actuellement en train de parler
+  bool get isSpeaking => _isSpeaking;
 
   /// Singleton
   factory AudioFeedbackService() {
@@ -41,6 +45,12 @@ class AudioFeedbackService {
       await _tts.setSpeechRate(0.5); // Vitesse normale
       await _tts.setVolume(1.0);
       await _tts.setPitch(1.0);
+
+      // Tracker l'état de lecture TTS
+      _tts.setStartHandler(() { _isSpeaking = true; });
+      _tts.setCompletionHandler(() { _isSpeaking = false; });
+      _tts.setCancelHandler(() { _isSpeaking = false; });
+      _tts.setErrorHandler((_) { _isSpeaking = false; });
 
       // Utiliser le moteur TTS par défaut
       final engines = await _tts.getEngines;
@@ -83,20 +93,29 @@ class AudioFeedbackService {
     try {
       final completer = Completer<void>();
 
+      // On pose des handlers temporaires qui complètent le completer
+      // ET maintiennent le flag _isSpeaking correctement
       _tts.setCompletionHandler(() {
+        _isSpeaking = false;
         if (!completer.isCompleted) completer.complete();
       });
 
       _tts.setErrorHandler((msg) {
+        _isSpeaking = false;
         if (!completer.isCompleted) completer.completeError(msg);
       });
 
       await _tts.speak(text);
       await completer.future;
 
+      // Remettre les handlers permanents
+      _tts.setCompletionHandler(() { _isSpeaking = false; });
+      _tts.setErrorHandler((_) { _isSpeaking = false; });
+
       // ignore: avoid_print
       print('[AudioFeedback] speakAndWait terminé: "$text"');
     } catch (e) {
+      _isSpeaking = false;
       // ignore: avoid_print
       print('[AudioFeedback] Erreur speakAndWait: $e');
     }
@@ -156,6 +175,7 @@ class AudioFeedbackService {
   /// Arrête la lecture en cours
   Future<void> stop() async {
     await _tts.stop();
+    _isSpeaking = false;
   }
 
   /// Libère les ressources

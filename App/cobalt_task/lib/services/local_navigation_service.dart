@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:volume_controller/volume_controller.dart';
 import 'audio_feedback_service.dart';
 
 /// =============================================================================
@@ -114,6 +115,9 @@ class LocalNavigationService {
     try {
       // Déterminer le mode de transport
       final travelMode = _getTravelMode(mode);
+
+      // S'assurer que le volume média est audible pour le guidage vocal Maps
+      await _ensureMediaVolume();
 
       // Tenter le briefing vocal AVANT le lancement Maps
       final briefingSpoken = await _tryVocalBriefing(destination, travelMode);
@@ -367,12 +371,33 @@ class LocalNavigationService {
   }
 
   // ===========================================================================
+  // VOLUME
+  // ===========================================================================
+
+  /// S'assure que le volume média est audible pour le guidage vocal Maps.
+  /// Si le volume est en dessous de 30%, le monte à 50%.
+  Future<void> _ensureMediaVolume() async {
+    try {
+      final controller = VolumeController();
+      final current = await controller.getVolume();
+      if (current < 0.3) {
+        controller.setVolume(0.5, showSystemUI: true);
+        // ignore: avoid_print
+        print('[Navigation] Volume média monté à 50% (était ${(current * 100).toInt()}%)');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[Navigation] Impossible de vérifier le volume: $e');
+    }
+  }
+
+  // ===========================================================================
   // GOOGLE MAPS LAUNCH
   // ===========================================================================
 
   /// Convertit le mode de transport en code Google Maps
   String _getTravelMode(String? mode) {
-    if (mode == null) return 'd'; // Défaut: voiture
+    if (mode == null) return 'b'; // Défaut: vélo
 
     final normalizedMode = mode.toLowerCase().trim();
     return _travelModes[normalizedMode] ?? 'd';
