@@ -61,6 +61,9 @@ class VoiceNote {
   /// Sentiment détecté pour les MEMO (idea, frustration, memory, question, neutral)
   final String? sentiment;
 
+  /// JSON sérialisé de l'AiAction exécutée (avec champ 'resolved' pour les métadonnées)
+  final String? actionJson;
+
   const VoiceNote({
     this.id,
     required this.text,
@@ -77,6 +80,7 @@ class VoiceNote {
     this.eventDateTime,
     this.contactName,
     this.sentiment,
+    this.actionJson,
   });
 
   /// Crée une VoiceNote en attente de transcription
@@ -133,6 +137,7 @@ class VoiceNote {
       'event_datetime': eventDateTime,
       'contact_name': contactName,
       'sentiment': sentiment,
+      'action_json': actionJson,
     };
   }
 
@@ -154,6 +159,7 @@ class VoiceNote {
       eventDateTime: map['event_datetime'] as String?,
       contactName: map['contact_name'] as String?,
       sentiment: map['sentiment'] as String?,
+      actionJson: map['action_json'] as String?,
     );
   }
 
@@ -174,6 +180,7 @@ class VoiceNote {
     String? eventDateTime,
     String? contactName,
     String? sentiment,
+    String? actionJson,
   }) {
     return VoiceNote(
       id: id ?? this.id,
@@ -191,6 +198,7 @@ class VoiceNote {
       eventDateTime: eventDateTime ?? this.eventDateTime,
       contactName: contactName ?? this.contactName,
       sentiment: sentiment ?? this.sentiment,
+      actionJson: actionJson ?? this.actionJson,
     );
   }
 

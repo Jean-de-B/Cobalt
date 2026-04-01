@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Cobalt utilise l\'accessibilité pour détecter les champs texte actifs et injecter le texte dicté. Cela permet la saisie vocale dans n\'importe quelle application.</string>
+</resources>

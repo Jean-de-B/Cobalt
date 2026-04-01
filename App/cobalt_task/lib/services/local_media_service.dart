@@ -33,6 +33,7 @@ class LocalMediaService {
   bool _initialized = false;
 
   final LocalSpotifyService _spotifyService = LocalSpotifyService();
+  LocalSpotifyService get spotifyService => _spotifyService;
 
   /// Initialise le service (MediaKeys uniquement)
   /// Spotify s'initialise à la demande via login() pour éviter les ANR
@@ -49,6 +50,7 @@ class LocalMediaService {
     required MediaControlType controlType,
     String? query,
     String? app,
+    String? deviceType,
   }) async {
     if (!_initialized) {
       await initialize();
@@ -67,7 +69,16 @@ class LocalMediaService {
         final spotifyResult = await _trySpotifyCommand(controlType, query, app);
         // ignore: avoid_print
         print('[Media] Spotify résultat: ${spotifyResult != null ? "OK" : "null (fallback MediaKey)"}');
-        if (spotifyResult != null) return spotifyResult;
+        if (spotifyResult != null) {
+          // Si un device_type est spécifié en plus, transférer après le lancement
+          if (deviceType != null && deviceType.isNotEmpty && controlType != MediaControlType.transfer) {
+            // ignore: avoid_print
+            print('[Media] Transfert additionnel vers $deviceType');
+            await Future.delayed(const Duration(milliseconds: 500));
+            await _transferToDevice(deviceType);
+          }
+          return spotifyResult;
+        }
       } else {
         // ignore: avoid_print
         print('[Media] Spotify NON connecté → fallback MediaKey');
@@ -94,6 +105,20 @@ class LocalMediaService {
 
         case MediaControlType.playSearch:
           return await _playSearch(query ?? '', app);
+
+        case MediaControlType.like:
+          if (_spotifyService.isConnected) {
+            final result = await _spotifyService.likeCurrentTrack();
+            if (result.success) return MediaResult.success();
+            return MediaResult.failure(result.error ?? 'Erreur like');
+          }
+          return MediaResult.failure('Spotify non connecté');
+
+        case MediaControlType.transfer:
+          if (_spotifyService.isConnected) {
+            return await _transferToDevice(deviceType);
+          }
+          return MediaResult.failure('Spotify non connecté');
       }
     } catch (e) {
       // ignore: avoid_print
@@ -154,12 +179,23 @@ class LocalMediaService {
         result = await _spotifyService.play();
       case MediaControlType.pause:
         result = await _spotifyService.pause();
+      case MediaControlType.playPause:
+        // Vérifier l'état actuel pour toggle correctement via l'API
+        final state = await _spotifyService.getPlayerState();
+        final isPlaying = state?['is_playing'] as bool? ?? false;
+        result = isPlaying
+            ? await _spotifyService.pause()
+            : await _spotifyService.play();
       case MediaControlType.next:
         result = await _spotifyService.next();
       case MediaControlType.previous:
         result = await _spotifyService.previous();
       case MediaControlType.playSearch:
         result = await _spotifyService.searchAndPlay(query ?? '');
+      case MediaControlType.like:
+        result = await _spotifyService.likeCurrentTrack();
+      case MediaControlType.transfer:
+        return null; // Géré directement dans execute()
       default:
         return null;
     }
@@ -227,6 +263,46 @@ class LocalMediaService {
     return await _sendMediaCommand('play');
   }
 
+  /// Transfère la lecture vers un appareil par type (ordinateur, telephone, enceinte, tv)
+  Future<MediaResult> _transferToDevice(String? deviceType) async {
+    if (deviceType == null || deviceType.isEmpty) {
+      return MediaResult.failure('Type d\'appareil non précisé');
+    }
+
+    final devices = await _spotifyService.getDevices();
+    if (devices.isEmpty) return MediaResult.failure('Aucun appareil Spotify disponible');
+
+    // Mapping mot-clé → type Spotify API
+    final targetType = switch (deviceType.toLowerCase()) {
+      'ordinateur' || 'computer' || 'pc' || 'ordi' || 'mac' => 'computer',
+      'telephone' || 'téléphone' || 'smartphone' || 'phone' || 'tel' || 'portable' => 'smartphone',
+      'enceinte' || 'speaker' || 'haut-parleur' || 'hp' => 'speaker',
+      'tv' || 'télé' || 'television' || 'télévision' => 'tv',
+      'cast' || 'chromecast' || 'google home' => 'castaudio',
+      _ => deviceType.toLowerCase(),
+    };
+
+    // Chercher un device qui matche le type
+    for (final device in devices) {
+      final type = (device['type'] as String? ?? '').toLowerCase();
+      if (type == targetType) {
+        final id = device['id'] as String? ?? '';
+        final name = device['name'] as String? ?? '';
+        final result = await _spotifyService.transferPlayback(id);
+        if (result.success) {
+          // ignore: avoid_print
+          print('[Media] Lecture transférée vers $name ($type)');
+          return MediaResult.success();
+        }
+        return MediaResult.failure(result.error ?? 'Erreur transfert');
+      }
+    }
+
+    // Pas trouvé
+    final available = devices.map((d) => d['name']).join(', ');
+    return MediaResult.failure('Aucun appareil de type "$deviceType" trouvé. Disponibles: $available');
+  }
+
   /// Vérifie si de la musique est actuellement en cours de lecture
   Future<bool> isMusicActive() async {
     try {
@@ -238,9 +314,6 @@ class LocalMediaService {
       return false;
     }
   }
-
-  /// Service Spotify (pour accès depuis AudioService)
-  LocalSpotifyService get spotifyService => _spotifyService;
 
   /// Vérifie si le service est disponible
   bool get isAvailable => _initialized;

@@ -74,14 +74,17 @@ INTENTS: calendar, sms, alarm, timer, system_control, call, messaging, message, 
 
 system_control types: volume_up/down/set/mute, vibrate/silent/normal, dnd_on/off, wifi_toggle, bluetooth_toggle, flashlight_on/off
 messaging apps: whatsapp, telegram, signal, messenger
-media types: play, pause, next, previous, stop, play_search (avec query et app optionnel)
+media types: play, pause, next, previous, stop, play_search (avec query et app optionnel), like (sauvegarder/liker le titre en cours), transfer (changer d'appareil: device_type = "ordinateur"/"computer" ou "telephone"/"smartphone" ou "enceinte"/"speaker" ou "tv")
 media apps: spotify, youtube_music, deezer, amazon_music, apple_music, soundcloud
+RÈGLE MÉDIA CRITIQUE: "joue"/"mets"/"lance"/"écoute" + n'importe quel texte = TOUJOURS intent "media" avec control_type "play_search" et le texte comme query. Le texte après "joue" est TOUJOURS un titre de chanson, un artiste ou un genre. On peut combiner play_search + device_type dans la même commande (ex: "joue X sur mon ordinateur" → play_search + device_type).
+navigation params: destination (lieu), mode (optionnel: "velo"/"bike"/"bicycling", "voiture"/"car"/"driving", "pied"/"walk"/"walking", "transport"/"bus"/"metro"/"transit"). Défaut si non précisé: ne pas inclure mode.
 payment params: recipient (prénom), amount (nombre), note (motif optionnel du paiement)
 
 RÈGLE CRITIQUE PAYMENT (priorité haute):
 - Toute phrase mentionnant un MONTANT D'ARGENT (euros, €) + un DESTINATAIRE = TOUJOURS payment
-- Mots-clés: "rembourse", "rembourser", "paye", "payer", "envoie X euros", "transfère", "paypal", "fais un paypal", "virement"
-- MÊME SANS LE MOT "PAYPAL": "rembourse 20€ à Paul" = payment, "paye 30 euros à Julie" = payment, "envoie 5 euros à Thomas" = payment
+- Mots-clés: "rembourse", "rembourser", "paye", "payer", "envoie X euros", "transfère", "virement", "demande de remboursement"
+- "rembourse 20€ à Paul" = payment, "paye 30 euros à Julie" = payment, "envoie 5 euros à Thomas" = payment
+- "demande à X de me rembourser" = payment (c'est une demande de remboursement, pas un message)
 - params: recipient (prénom seul), amount (nombre), note (motif optionnel: "pour le resto", "pour la bière")
 - Ce n'est PAS un message ni un mémo. C'est une action de PAIEMENT.
 
@@ -130,6 +133,14 @@ EXEMPLES:
 
 "Emmène-moi gare de Lyon" → {"reasoning":"Navigation","intent":"navigation","params":{"destination":"Gare de Lyon"}}
 
+"Emmène-moi au travail en vélo" → {"reasoning":"Navigation vélo","intent":"navigation","params":{"destination":"travail","mode":"velo"}}
+
+"Comment aller à la gare à pied" → {"reasoning":"Navigation piéton","intent":"navigation","params":{"destination":"la gare","mode":"pied"}}
+
+"Itinéraire pour aller chez Marc en voiture" → {"reasoning":"Navigation voiture","intent":"navigation","params":{"destination":"chez Marc","mode":"voiture"}}
+
+"Amène-moi au cinéma en bus" → {"reasoning":"Navigation transport","intent":"navigation","params":{"destination":"cinéma","mode":"bus"}}
+
 "Ouvre Instagram" → {"reasoning":"App","intent":"app_launch","params":{"app_name":"Instagram"}}
 
 "Mets pause" → {"reasoning":"Pause média","intent":"media","params":{"control_type":"pause"}}
@@ -137,6 +148,22 @@ EXEMPLES:
 "Joue du jazz sur Spotify" → {"reasoning":"Musique jazz Spotify","intent":"media","params":{"control_type":"play_search","query":"jazz","app":"spotify"}}
 
 "Mets Dire Straits" → {"reasoning":"Musique Dire Straits","intent":"media","params":{"control_type":"play_search","query":"Dire Straits"}}
+
+"Joue tant pis pour elle" → {"reasoning":"Musique tant pis pour elle","intent":"media","params":{"control_type":"play_search","query":"tant pis pour elle"}}
+
+"Écoute Bohemian Rhapsody" → {"reasoning":"Musique Bohemian Rhapsody","intent":"media","params":{"control_type":"play_search","query":"Bohemian Rhapsody"}}
+
+"Lance de la musique" → {"reasoning":"Lancer musique","intent":"media","params":{"control_type":"play"}}
+
+"Joue Stromae sur mon ordinateur" → {"reasoning":"Musique Stromae sur ordinateur","intent":"media","params":{"control_type":"play_search","query":"Stromae","device_type":"ordinateur"}}
+
+"Mets du rock sur l'enceinte" → {"reasoning":"Rock sur enceinte","intent":"media","params":{"control_type":"play_search","query":"rock","device_type":"enceinte"}}
+
+"Like ce titre" → {"reasoning":"Liker le titre en cours","intent":"media","params":{"control_type":"like"}}
+
+"Joue sur mon ordinateur" → {"reasoning":"Transférer la lecture vers l'ordinateur","intent":"media","params":{"control_type":"transfer","device_type":"ordinateur"}}
+
+"Mets la musique sur le téléphone" → {"reasoning":"Transférer la lecture vers le téléphone","intent":"media","params":{"control_type":"transfer","device_type":"telephone"}}
 
 "Allume la lampe" → {"reasoning":"Lampe torche","intent":"system_control","params":{"control_type":"flashlight_on"}}
 
@@ -148,7 +175,7 @@ EXEMPLES:
 
 "Envoie 5 euros à Thomas pour la bière" → {"reasoning":"Envoi argent + motif","intent":"payment","params":{"recipient":"Thomas","amount":5,"note":"la bière"}}
 
-"Fais un PayPal de 15 euros à Marie pour le resto" → {"reasoning":"PayPal = paiement","intent":"payment","params":{"recipient":"Marie","amount":15,"note":"le resto"}}
+"Demande à Marie de me rembourser 15 euros pour le resto" → {"reasoning":"Demande remboursement","intent":"payment","params":{"recipient":"Marie","amount":15,"note":"le resto"}}
 
 "Transfère 50 euros à Sophie" → {"reasoning":"Transfert argent","intent":"payment","params":{"recipient":"Sophie","amount":50}}
 

@@ -3,7 +3,6 @@ package com.example.cobalt_task
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,17 +16,14 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.TextView
 
 /**
  * Singleton gerant l'overlay vocal Cobalt.
  *
  * Affiche par-dessus toute app (y compris barres systeme) :
- * - Halo bleu anime sur les bords de l'ecran (EdgeGlowView)
  * - Fond semi-transparent
  * - Halo lumineux reactif a la voix (VoiceRingView) derriere le logo
  * - Logo Cobalt detoure
- * - Texte "Cobalt ecoute..."
  *
  * L'utilisateur tape n'importe ou pour dismiss.
  */
@@ -51,8 +47,6 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
     private var overlayView: View? = null
     private var windowManager: WindowManager? = null
     private var voiceRingView: VoiceRingView? = null
-    private var edgeGlowView: EdgeGlowView? = null
-    private var labelView: TextView? = null
     private var onDismissCallback: (() -> Unit)? = null
     private var isShowing = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -140,7 +134,6 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
             .setDuration(150)
             .withEndAction {
                 try {
-                    edgeGlowView?.cleanup()
                     voiceRingView?.cleanup()
                     windowManager?.removeView(view)
                 } catch (e: Exception) {
@@ -148,8 +141,6 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
                 }
                 overlayView = null
                 voiceRingView = null
-                edgeGlowView = null
-                labelView = null
                 isShowing = false
                 Log.d(TAG, "Overlay masque")
             }
@@ -158,12 +149,6 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
 
     fun updateAmplitude(amplitude: Float) {
         voiceRingView?.updateAmplitude(amplitude)
-    }
-
-    fun updateLabel(text: String) {
-        mainHandler.post {
-            labelView?.text = text
-        }
     }
 
     fun isVisible(): Boolean = isShowing
@@ -188,13 +173,6 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
                 true
             }
         }
-
-        // Halo bleu anime sur les bords de l'ecran
-        edgeGlowView = EdgeGlowView(appContext)
-        root.addView(edgeGlowView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
 
         // Container central vertical
         val centerContainer = LinearLayout(appContext).apply {
@@ -231,25 +209,8 @@ class CobaltOverlayManager private constructor(private val appContext: Context) 
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
-        // Label "Cobalt ecoute..."
-        labelView = TextView(appContext).apply {
-            text = "Cobalt \u00e9coute..."
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-        }
-        val labelParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            topMargin = (8 * density).toInt()
-        }
-
         // Assemblage
         centerContainer.addView(logoArea, logoAreaParams)
-        centerContainer.addView(labelView, labelParams)
         root.addView(centerContainer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT

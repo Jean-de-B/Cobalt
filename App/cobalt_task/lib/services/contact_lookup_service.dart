@@ -279,4 +279,13 @@ class ContactLookupService {
 
   /// Nombre de contacts chargés
   int get contactCount => _cachedContacts?.length ?? 0;
+
+  /// Liste complète des contacts avec numéro de téléphone
+  List<Contact> get allContacts {
+    if (_cachedContacts == null) return [];
+    return _cachedContacts!
+        .where((c) => c.phones.isNotEmpty && c.displayName.isNotEmpty)
+        .toList()
+      ..sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+  }
 }

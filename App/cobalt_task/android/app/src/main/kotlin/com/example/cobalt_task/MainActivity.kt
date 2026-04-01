@@ -3,6 +3,7 @@ package com.example.cobalt_task
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.Activity
 import android.app.PendingIntent
 import android.app.SearchManager
 import android.app.role.RoleManager
@@ -16,6 +17,8 @@ import android.media.AudioManager
 import android.app.KeyguardManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
@@ -24,8 +27,10 @@ import android.telephony.SmsManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import android.view.KeyEvent
+import java.util.concurrent.atomic.AtomicBoolean
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
@@ -56,7 +61,10 @@ class MainActivity : FlutterActivity() {
     private var customNotifChannel: MethodChannel? = null
     private var assistantDiagChannel: MethodChannel? = null
     private var cobaltOverlayChannel: MethodChannel? = null
+    private var fintectureChannel: MethodChannel? = null
     private var micButtonReceiver: BroadcastReceiver? = null
+    private var notificationReceiver: BroadcastReceiver? = null
+    private var notificationEventSink: EventChannel.EventSink? = null
     private var pendingRoleResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -127,8 +135,7 @@ class MainActivity : FlutterActivity() {
                     val message = call.argument<String>("message")
 
                     if (phoneNumber != null && message != null) {
-                        val success = sendSmsDirectly(phoneNumber, message)
-                        result.success(success)
+                        sendSmsDirectly(phoneNumber, message, result)
                     } else {
                         result.error("INVALID_ARGUMENT", "phoneNumber and message are required", null)
                     }
@@ -191,6 +198,20 @@ class MainActivity : FlutterActivity() {
                 "isMusicActive" -> {
                     val isActive = isMusicPlaying()
                     result.success(isActive)
+                }
+                "volumeUp" -> {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)
+                    val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    result.success(mapOf("current" to current, "max" to max))
+                }
+                "volumeDown" -> {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0)
+                    val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    result.success(mapOf("current" to current, "max" to max))
                 }
                 else -> {
                     result.notImplemented()
@@ -260,7 +281,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "showMicNotification" -> {
                     val title = call.argument<String>("title") ?: "Cobalt Task"
-                    val text = call.argument<String>("text") ?: "En écoute..."
+                    val text = call.argument<String>("text") ?: ""
                     val isRecording = call.argument<Boolean>("isRecording") ?: false
                     showMicNotification(title, text, isRecording)
                     result.success(true)
@@ -314,12 +335,7 @@ class MainActivity : FlutterActivity() {
                     overlayManager.updateAmplitude(amp)
                     result.success(true)
                 }
-                "updateOverlayLabel" -> {
-                    val text = call.arguments as? String ?: ""
-                    overlayManager.updateLabel(text)
-                    result.success(true)
-                }
-                "isOverlayVisible" -> {
+"isOverlayVisible" -> {
                     result.success(overlayManager.isVisible())
                 }
                 else -> result.notImplemented()
@@ -349,6 +365,25 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // Canal Fintecture (deep link callback)
+        fintectureChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.cobalt_task/fintecture")
+
+        // EventChannel pour streamer les notifications en temps réel vers Flutter
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "com.cobalt_task/notification_stream")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    notificationEventSink = events
+                    Log.d(TAG, "Notification EventChannel: onListen")
+                }
+                override fun onCancel(arguments: Any?) {
+                    notificationEventSink = null
+                    Log.d(TAG, "Notification EventChannel: onCancel")
+                }
+            })
+
+        // BroadcastReceiver pour relayer les notifications du NotificationListenerService
+        registerNotificationReceiver()
 
         // BroadcastReceiver pour le bouton micro de la notification
         // Utilise getBroadcast() au lieu de getActivity() → pas d'ouverture de l'app
@@ -393,6 +428,35 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "MicButtonReceiver registered (MIC_RECORD + ASSIST_RECORD)")
     }
 
+    private fun registerNotificationReceiver() {
+        if (notificationReceiver != null) return
+
+        notificationReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != CobaltNotificationListener.ACTION_NEW_MESSAGE) return
+
+                val data = hashMapOf<String, Any?>(
+                    "senderName" to intent.getStringExtra(CobaltNotificationListener.EXTRA_SENDER),
+                    "messagePreview" to intent.getStringExtra(CobaltNotificationListener.EXTRA_PREVIEW),
+                    "packageName" to intent.getStringExtra(CobaltNotificationListener.EXTRA_PACKAGE),
+                    "timestamp" to intent.getLongExtra(CobaltNotificationListener.EXTRA_TIMESTAMP, 0L),
+                )
+
+                Handler(Looper.getMainLooper()).post {
+                    notificationEventSink?.success(data)
+                }
+            }
+        }
+
+        val filter = IntentFilter(CobaltNotificationListener.ACTION_NEW_MESSAGE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(notificationReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(notificationReceiver, filter)
+        }
+        Log.d(TAG, "NotificationReceiver registered")
+    }
+
     override fun onDestroy() {
         isEngineReady = false
         micButtonReceiver?.let {
@@ -404,6 +468,16 @@ class MainActivity : FlutterActivity() {
             }
         }
         micButtonReceiver = null
+        notificationReceiver?.let {
+            try {
+                unregisterReceiver(it)
+                Log.d(TAG, "NotificationReceiver unregistered")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering receiver: ${e.message}")
+            }
+        }
+        notificationReceiver = null
+        notificationEventSink = null
         super.onDestroy()
     }
 
@@ -428,7 +502,7 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        // Deep link Spotify OAuth2
+        // Deep links
         intent.data?.let { uri ->
             if (uri.scheme == "cobalttask" && uri.host == "spotify-callback") {
                 val code = uri.getQueryParameter("code")
@@ -439,15 +513,25 @@ class MainActivity : FlutterActivity() {
                     spotifyAuthChannel?.invokeMethod("onAuthError", mapOf("error" to error))
                 }
             }
+            // Fintecture payment callback
+            if (uri.scheme == "cobalt" && uri.host == "fintecture") {
+                Log.d(TAG, "Fintecture callback: $uri")
+                fintectureChannel?.invokeMethod("onPaymentCallback", mapOf(
+                    "state" to (uri.getQueryParameter("state") ?: ""),
+                    "status" to (uri.getQueryParameter("status") ?: "")
+                ))
+            }
         }
 
-        // Lancement en mode assistant (ASSIST intent via AssistantActivity trampoline)
+        // Lancement en mode assistant (via AssistantActivity trampoline)
         intent.getStringExtra("launch_mode")?.let { mode ->
-            if (mode == "assist") {
-                Log.d(TAG, "onNewIntent: ASSIST via trampoline, source=${intent.getStringExtra("assist_source")}")
-                assistantChannel?.invokeMethod("onAssistLaunch", mapOf(
-                    "source" to (intent.getStringExtra("assist_source") ?: "unknown")
-                ))
+            when (mode) {
+                "assist" -> {
+                    Log.d(TAG, "onNewIntent: ASSIST via trampoline, source=${intent.getStringExtra("assist_source")}")
+                    assistantChannel?.invokeMethod("onAssistLaunch", mapOf(
+                        "source" to (intent.getStringExtra("assist_source") ?: "unknown")
+                    ))
+                }
             }
         }
     }
@@ -912,27 +996,87 @@ class MainActivity : FlutterActivity() {
     // =========================================================================
 
     /**
-     * Envoie un SMS directement sans ouvrir l'application Messages
-     * Nécessite la permission SEND_SMS
+     * Envoie un SMS directement sans ouvrir l'application Messages.
+     * Nécessite la permission SEND_SMS.
+     *
+     * Le résultat est renvoyé à Flutter via [result] une fois que l'OS a
+     * confirmé (ou rejeté) l'envoi grâce au sentIntent / BroadcastReceiver.
+     * Cela évite le faux-positif de l'ancienne implémentation fire-and-forget.
      */
-    private fun sendSmsDirectly(phoneNumber: String, message: String): Boolean {
-        return try {
-            val smsManager = SmsManager.getDefault()
-
-            // Si le message est trop long, le diviser en plusieurs parties
-            if (message.length > 160) {
-                val parts = smsManager.divideMessage(message)
-                smsManager.sendMultipartTextMessage(phoneNumber, null, parts, null, null)
+    private fun sendSmsDirectly(phoneNumber: String, message: String, result: MethodChannel.Result) {
+        try {
+            // Obtenir le SmsManager adapté au SIM par défaut (API 31+ / dual-SIM)
+            @Suppress("DEPRECATION")
+            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                applicationContext.getSystemService(SmsManager::class.java)
             } else {
-                smsManager.sendTextMessage(phoneNumber, null, message, null, null)
+                SmsManager.getDefault()
             }
 
-            android.util.Log.d("CobaltSMS", "SMS envoyé à $phoneNumber: $message")
-            true
+            // Action unique pour éviter les collisions entre envois simultanés
+            val sentAction = "com.cobalt_task.SMS_SENT_${System.currentTimeMillis()}"
+
+            val sentIntent = PendingIntent.getBroadcast(
+                this, 0,
+                Intent(sentAction),
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            // Receiver one-shot : l'OS nous donne le vrai résultat réseau
+            // AtomicBoolean pour éviter que le timeout ET le receiver appellent
+            // result.success() en même temps
+            val responded = AtomicBoolean(false)
+
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (!responded.compareAndSet(false, true)) return
+                    try { unregisterReceiver(this) } catch (_: Exception) {}
+                    val success = resultCode == Activity.RESULT_OK
+                    if (success) {
+                        Log.d("CobaltSMS", "SMS confirmé par l'OS → $phoneNumber")
+                    } else {
+                        Log.e("CobaltSMS", "SMS rejeté par l'OS (code $resultCode) → $phoneNumber")
+                    }
+                    result.success(success)
+                }
+            }
+
+            // RECEIVER_EXPORTED requis : le callback est envoyé par le service téléphonie
+            // (processus système séparé) — NOT_EXPORTED l'empêche de livrer le broadcast.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, IntentFilter(sentAction), RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(receiver, IntentFilter(sentAction))
+            }
+
+            // Timeout de sécurité : si le broadcast ne revient pas dans 10s
+            // (SIM absent, réseau indisponible, OS qui oublie le PendingIntent),
+            // on désenregistre le receiver et on retourne true (SMS soumis à l'OS).
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (!responded.compareAndSet(false, true)) return@postDelayed
+                try { unregisterReceiver(receiver) } catch (_: Exception) {}
+                Log.w("CobaltSMS", "Timeout sentIntent — SMS supposé envoyé à $phoneNumber")
+                result.success(true)
+            }, 10_000L)
+
+            // Envoi — long message : découpage automatique
+            if (message.length > 160) {
+                val parts = smsManager.divideMessage(message)
+                val sentIntents = ArrayList<PendingIntent?>().apply {
+                    add(sentIntent) // callback sur la première partie suffit
+                    repeat(parts.size - 1) { add(null) }
+                }
+                smsManager.sendMultipartTextMessage(phoneNumber, null, parts, sentIntents, null)
+            } else {
+                smsManager.sendTextMessage(phoneNumber, null, message, sentIntent, null)
+            }
+
+            Log.d("CobaltSMS", "SMS soumis au SmsManager → $phoneNumber")
+
         } catch (e: Exception) {
-            android.util.Log.e("CobaltSMS", "Erreur envoi SMS: ${e.message}")
+            Log.e("CobaltSMS", "Erreur envoi SMS: ${e.message}")
             e.printStackTrace()
-            false
+            result.success(false)
         }
     }
 }

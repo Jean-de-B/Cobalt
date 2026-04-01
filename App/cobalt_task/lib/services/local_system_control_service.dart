@@ -1,5 +1,6 @@
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
+import 'package:flutter/services.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:torch_light/torch_light.dart';
 import '../models/ai_action.dart';
@@ -42,9 +43,7 @@ class SystemControlResult {
 class LocalSystemControlService {
   bool _initialized = false;
   final VolumeController _volumeController = VolumeController();
-
-  /// Pas de changement de volume (pourcentage)
-  static const double _volumeStep = 0.1; // 10%
+  static const _mediaChannel = MethodChannel('com.cobalt_task/media_keys');
 
   /// Initialise le service
   Future<void> initialize() async {
@@ -127,24 +126,24 @@ class LocalSystemControlService {
     }
   }
 
-  /// Augmente le volume
+  /// Augmente le volume (1 palier Android natif via AudioManager)
   Future<SystemControlResult> _volumeUp() async {
-    final current = await _volumeController.getVolume();
-    final newVolume = (current + _volumeStep).clamp(0.0, 1.0);
-    _volumeController.setVolume(newVolume);
+    final result = await _mediaChannel.invokeMethod('volumeUp');
+    final map = Map<String, dynamic>.from(result);
+    final percent = (map['current'] * 100.0 / map['max']).round();
     // ignore: avoid_print
-    print('[SystemControl] Volume: ${(newVolume * 100).toInt()}%');
-    return SystemControlResult.success(newVolume);
+    print('[SystemControl] Volume: $percent% (${map['current']}/${map['max']})');
+    return SystemControlResult.success(percent / 100.0);
   }
 
-  /// Diminue le volume
+  /// Diminue le volume (1 palier Android natif via AudioManager)
   Future<SystemControlResult> _volumeDown() async {
-    final current = await _volumeController.getVolume();
-    final newVolume = (current - _volumeStep).clamp(0.0, 1.0);
-    _volumeController.setVolume(newVolume);
+    final result = await _mediaChannel.invokeMethod('volumeDown');
+    final map = Map<String, dynamic>.from(result);
+    final percent = (map['current'] * 100.0 / map['max']).round();
     // ignore: avoid_print
-    print('[SystemControl] Volume: ${(newVolume * 100).toInt()}%');
-    return SystemControlResult.success(newVolume);
+    print('[SystemControl] Volume: $percent% (${map['current']}/${map['max']})');
+    return SystemControlResult.success(percent / 100.0);
   }
 
   /// Définit le volume à une valeur précise (0-100)

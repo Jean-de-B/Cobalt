@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -81,6 +83,9 @@ class AudioService {
 
   /// Subscription au stream de données BLE
   StreamSubscription? _bleDataSubscription;
+
+  /// Garde contre l'exécution concurrente de retryPendingTranscriptions
+  bool _isRetrying = false;
 
   /// Note en cours de lecture (pour l'UI)
   int? _currentlyPlayingId;
@@ -214,10 +219,11 @@ class AudioService {
       _playbackStateController.add(null);
     });
 
-    // Auto-scan BLE au démarrage (connexion automatique au premier appareil trouvé)
+    // Initialiser le service BLE (charge device persisté, écoute état BT,
+    // démarre reconnexion automatique si device connu)
     // ignore: avoid_print
-    print('AUDIO: Lancement auto-scan BLE...');
-    _bleService.startScan(autoConnect: true);
+    print('AUDIO: Initialisation BLE (reconnexion 3-phases)...');
+    await _bleService.initialize();
   }
 
   // ---------------------------------------------------------------------------
@@ -244,7 +250,10 @@ class AudioService {
       // ignore: avoid_print
       print('AUDIO: Décodage OK - WAV: ${wavData.length} bytes, durée: ${header.durationSeconds.toStringAsFixed(1)}s');
 
-      // 2. Sauvegarder le fichier WAV
+      // 2. Éliminer les enregistrements silencieux avant toute persistence ou STT
+      if (_isWavSilent(wavData)) return;
+
+      // 3. Sauvegarder le fichier WAV
       final audioPath = await _saveWavFile(wavData);
       final duration = header.durationSeconds.round();
       // ignore: avoid_print
@@ -272,6 +281,134 @@ class AudioService {
       print('AUDIO STACK: $stackTrace');
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // DÉTECTION DE SILENCE
+  // ---------------------------------------------------------------------------
+
+  /// Taille du header WAV standard en bytes.
+  static const int _wavHeaderSize = 44;
+
+  /// Fréquence d'échantillonnage supposée (Hz). Utilisée pour calculer la
+  /// taille des fenêtres d'analyse.
+  static const int _sampleRate = 16000;
+
+  /// Durée d'une fenêtre d'analyse en ms (100 ms = 1600 samples à 16kHz).
+  static const int _windowMs = 100;
+
+  /// RMS minimal de la fenêtre la plus forte pour valider la présence de parole.
+  /// Valeur 600/32767 ≈ 1.8% → en dessous, même les pics sont trop faibles
+  /// pour être de la parole (micro BLE propre ou téléphone silencieux).
+  static const double _minPeakRms = 600;
+
+  /// Ratio minimum entre la fenêtre la plus forte et la moyenne des fenêtres.
+  /// La parole est dynamique : ses pics sont ≥ 2× le fond ambiant.
+  /// Le bruit ambiant (ventilation, souffle) est uniforme : ratio ≈ 1.0–1.4.
+  static const double _minDynamicRatio = 1.8;
+
+  /// Analyse les samples PCM du WAV par fenêtres de 100 ms et retourne [true]
+  /// si l'audio est silencieux ou correspond à du bruit ambiant uniforme.
+  ///
+  /// Algorithme :
+  /// 1. Découpe le signal en fenêtres de [_windowMs] ms.
+  /// 2. Calcule le RMS de chaque fenêtre.
+  /// 3. Si le RMS maximal < [_minPeakRms] → énergie trop faible → silence.
+  /// 4. Si max(RMS) / mean(RMS) < [_minDynamicRatio] → signal uniforme → bruit.
+  ///
+  /// La condition 4 est ce qui distingue "parole" de "bruit ambiant soutenu" :
+  /// un micro de téléphone dans une pièce normale capte un fond continu qui
+  /// passe le test énergétique brut, mais dont la dynamique est trop faible.
+  bool _isWavSilent(Uint8List wavData) {
+    if (wavData.length <= _wavHeaderSize) return true;
+
+    final byteData = ByteData.sublistView(wavData, _wavHeaderSize);
+    final totalSamples = byteData.lengthInBytes ~/ 2;
+    if (totalSamples == 0) return true;
+
+    final windowSize = (_sampleRate * _windowMs) ~/ 1000; // 1600 samples
+    final windowCount = (totalSamples / windowSize).ceil();
+
+    final windowRms = <double>[];
+
+    for (int w = 0; w < windowCount; w++) {
+      final start = w * windowSize;
+      final end = (start + windowSize).clamp(0, totalSamples);
+      double sumSq = 0;
+      for (int i = start; i < end; i++) {
+        final s = byteData.getInt16(i * 2, Endian.little).toDouble();
+        sumSq += s * s;
+      }
+      windowRms.add((sumSq / (end - start) > 0)
+          ? (sumSq / (end - start)) // RMS² — on compare les carrés pour éviter sqrt
+          : 0);
+    }
+
+    // RMS² max et moyenne (comparaison relative — pas besoin de sqrt)
+    final maxRmsSq = windowRms.reduce((a, b) => a > b ? a : b);
+    final meanRmsSq = windowRms.fold(0.0, (s, v) => s + v) / windowRms.length;
+
+    final maxRms = maxRmsSq > 0 ? math.sqrt(maxRmsSq) : 0.0;  // RMS réel pour le seuil absolu
+    final ratio = meanRmsSq > 0 ? (maxRmsSq / meanRmsSq) : 0.0;
+
+    // ignore: avoid_print
+    print('AUDIO: Silence check — RMS_max: ${maxRms.toStringAsFixed(0)}/32767 '
+        '(${(maxRms / 32767 * 100).toStringAsFixed(1)}%), '
+        'ratio dynamique: ${ratio.toStringAsFixed(2)}');
+
+    if (maxRms < _minPeakRms) {
+      // ignore: avoid_print
+      print('AUDIO: 🔇 Silence détecté (énergie trop faible) — audio ignoré');
+      return true;
+    }
+    if (ratio < _minDynamicRatio) {
+      // ignore: avoid_print
+      print('AUDIO: 🔇 Silence détecté (bruit uniforme, ratio ${ratio.toStringAsFixed(2)}) — audio ignoré');
+      return true;
+    }
+    return false;
+  }
+
+  /// Hallucinations connues de Whisper sur audio silencieux
+  static const List<String> _whisperHallucinations = [
+    'sous-titres réalisés par',
+    "sous-titres par la communauté d'amara",
+    'amara.org',
+    'merci d\'avoir regardé',
+    'transcription de',
+    'sous-titrage',
+    'sous-titres',
+  ];
+
+  /// Retourne [true] si le texte transcrit est vide ou halluciné.
+  ///
+  /// Critères (dans l'ordre) :
+  /// 1. Moins de 3 caractères alphabétiques après suppression des espaces/ponctuation
+  /// 2. Correspond à une hallucination Whisper connue
+  bool _isTranscriptionMeaningless(String text) {
+    final cleaned = text.trim();
+
+    // Compter les lettres (au moins 3 pour une vraie transcription)
+    final letterCount = cleaned.replaceAll(RegExp(r'[^a-zA-ZÀ-ÿ]'), '').length;
+    if (letterCount < 3) {
+      // ignore: avoid_print
+      print('TRANSCRIPTION: Vide ($letterCount lettre(s) utiles)');
+      return true;
+    }
+
+    // Vérifier contre les hallucinations Whisper connues
+    final lower = cleaned.toLowerCase();
+    for (final pattern in _whisperHallucinations) {
+      if (lower.contains(pattern)) {
+        // ignore: avoid_print
+        print('TRANSCRIPTION: Hallucination détectée ("$pattern")');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
 
   /// Sauvegarde un fichier WAV sur le disque
   ///
@@ -371,6 +508,19 @@ class AudioService {
       final result = (text: transcribedText, usedWhisper: usedWhisper);
       // ignore: avoid_print
       print('TRANSCRIPTION: Succès! Texte: "${result.text.substring(0, result.text.length.clamp(0, 50))}..."');
+
+      // -----------------------------------------------------------------------
+      // Validation post-STT : éliminer les transcriptions vides ou hallucinées
+      // -----------------------------------------------------------------------
+      if (_isTranscriptionMeaningless(result.text)) {
+        // ignore: avoid_print
+        print('TRANSCRIPTION: 🔇 Texte vide ou hallucination détectée — note supprimée');
+        await _databaseService.deleteNote(note.id!);
+        final audioFile = File(note.audioPath);
+        if (await audioFile.exists()) await audioFile.delete();
+        return;
+      }
+      // -----------------------------------------------------------------------
 
       // Mettre à jour la note avec le texte (passer en mode "analyse")
       var updatedNote = note.copyWith(
@@ -486,6 +636,8 @@ class AudioService {
               MediaControlType.previous => 'Piste précédente',
               MediaControlType.stop => 'Musique arrêtée',
               MediaControlType.playSearch => 'Musique lancée !',
+              MediaControlType.like => 'Titre liké !',
+              MediaControlType.transfer => 'Lecture transférée',
             };
             return ('🎵 ${a.controlType.name}', tts);
           },
@@ -498,9 +650,9 @@ class AudioService {
                 return ('⏳ → ${a.recipient} ?', 'Veuillez d\'abord confirmer le contact ${a.recipient}');
               }
               if (msg.contains('non configuré')) {
-                return ('❌ PayPal', 'PayPal n\'est pas encore configuré');
+                return ('❌ Paiement', 'IBAN non configuré');
               }
-              return ('❌ PayPal', msg);
+              return ('❌ Paiement', msg);
             }
             final contact = execResult?.metadata?['contact'] as String? ?? a.recipient;
             final amt = a.amount.toStringAsFixed(a.amount == a.amount.roundToDouble() ? 0 : 2);
@@ -510,10 +662,18 @@ class AudioService {
           none: (a) => (a.memo ?? '', ''),
         );
 
-        // Mettre à jour la note avec le résumé de l'action
+        // Construire le JSON de l'action pour affichage structuré dans la fiche
+        final actionMap = actionResult.action.toJson();
+        final resolved = actionResult.executionResult?.metadata;
+        if (resolved != null && resolved.isNotEmpty) {
+          actionMap['resolved'] = resolved;
+        }
+
+        // Mettre à jour la note avec le résumé et le JSON de l'action
         updatedNote = updatedNote.copyWith(
           summary: summary,
           isAnalyzing: false,
+          actionJson: jsonEncode(actionMap),
         );
         await _databaseService.updateNote(updatedNote);
 
@@ -554,9 +714,9 @@ class AudioService {
           final amt = pa.amount.toStringAsFixed(pa.amount == pa.amount.roundToDouble() ? 0 : 2);
           final noteStr = pa.note != null ? ' (${pa.note})' : '';
           final fiche = Fiche.fromAnalysis(
-            title: '💸 $amt€ → $contact via PayPal$noteStr',
+            title: '💸 $amt€ → $contact$noteStr',
             category: NoteCategory.memo,
-            content: 'Remboursement de $amt€ à $contact via PayPal$noteStr',
+            content: 'Demande de remboursement de $amt€ à $contact$noteStr',
             sourceNoteId: updatedNote.id,
           );
           final ficheId = await _databaseService.insertFiche(fiche);
@@ -565,6 +725,23 @@ class AudioService {
           }
           // ignore: avoid_print
           print('LOCAL_ACTION: Fiche MEMO paiement créée (id=$ficheId)');
+        }
+
+        // Enregistrer l'action dans l'historique Google (même sans sync)
+        if (_googleBridgeService.isConnected) {
+          final intent = actionResult.action.intent;
+          final categoryForHistory = switch (intent) {
+            ActionIntent.calendar => NoteCategory.event,
+            ActionIntent.sms || ActionIntent.messaging || ActionIntent.message ||
+            ActionIntent.call => NoteCategory.contact,
+            ActionIntent.payment => NoteCategory.memo,
+            _ => NoteCategory.memo,
+          };
+          _googleBridgeService.addActionToHistory(
+            category: categoryForHistory,
+            title: summary,
+            success: actionResult.executionResult?.success ?? true,
+          );
         }
 
         // ignore: avoid_print
@@ -576,7 +753,8 @@ class AudioService {
       print('LOCAL_ACTION: Pas d\'action locale, passage au système de fiches...');
       // ===========================================================================
 
-      // ÉTAPE 2: Récupérer les fiches existantes pour le contexte
+      // ÉTAPE 2: Récupérer les fiches existantes pour la déduplication locale (TitleMatcher)
+      // Note: non envoyées à l'API Groq — la catégorisation est purement textuelle.
       final existingFiches = await _databaseService.getAllFiches();
       final fichesContext = existingFiches.map((f) => FicheContext(
         id: f.id!,
@@ -584,13 +762,10 @@ class AudioService {
         category: f.category.name,
       )).toList();
 
-      // ÉTAPE 3: Analyse intelligente Llama 3 avec contexte
+      // ÉTAPE 3: Analyse intelligente Llama 3 (transcription uniquement, ~600 tokens)
       // ignore: avoid_print
-      print('AI_ANALYSIS: Envoi à Groq Llama 3 (${fichesContext.length} fiches en contexte)...');
-      final analysis = await _aiSorterService.analyzeText(
-        result.text,
-        existingFiches: fichesContext,
-      );
+      print('AI_ANALYSIS: Envoi à Groq Llama 3...');
+      final analysis = await _aiSorterService.analyzeText(result.text);
       // ignore: avoid_print
       print('AI_ANALYSIS: Catégorie=${analysis.category.name}, Titre="${analysis.summary}"');
 
@@ -754,11 +929,30 @@ class AudioService {
     // Note: Le wake lock est géré par BleService (actif tant que connecté)
   }
 
-  /// Retente le traitement des notes en attente
+  /// Retente le traitement des notes en attente.
   ///
   /// Gère les notes en attente de transcription ET d'analyse.
   /// À appeler quand l'app revient au premier plan.
+  ///
+  /// Protégé contre l'exécution concurrente : si un retry est déjà en cours
+  /// (ex. lifecycle resume rapide dû à l'overlay AssistantActivity), l'appel
+  /// est ignoré silencieusement.
   Future<void> retryPendingTranscriptions() async {
+    if (_isRetrying) {
+      // ignore: avoid_print
+      print('RETRY: Déjà en cours, appel ignoré');
+      return;
+    }
+    _isRetrying = true;
+
+    try {
+      await _retryPendingTranscriptionsInternal();
+    } finally {
+      _isRetrying = false;
+    }
+  }
+
+  Future<void> _retryPendingTranscriptionsInternal() async {
     // ignore: avoid_print
     print('RETRY: Recherche des notes en attente...');
 
@@ -767,8 +961,18 @@ class AudioService {
     // Notes en attente de transcription
     final pendingTranscription = allNotes.where((n) => n.isTranscribing && n.text.isEmpty).toList();
 
-    // Notes en attente d'analyse (transcrites mais pas analysées)
-    final pendingAnalysis = allNotes.where((n) => n.isAnalyzing || (n.text.isNotEmpty && n.summary.isEmpty && !n.isTranscribing)).toList();
+    // Notes en attente d'analyse :
+    // - isAnalyzing=true (pipeline interrompu)
+    // - MAIS exclure les notes déjà traitées par une action locale (actionJson non null)
+    //   → elles ne passent jamais par l'AI sorter
+    // - La condition summary.isEmpty est retirée : trop large, peut boucler indéfiniment
+    //   si l'AI sorter produit un summary vide ou si la note a été partiellement mise à jour.
+    final pendingAnalysis = allNotes.where((n) {
+      if (!n.isAnalyzing) return false;           // Uniquement les notes explicitement en attente
+      if (n.actionJson != null) return false;     // Déjà traitée par action locale
+      if (n.text.isEmpty) return false;           // Pas encore transcrite → chemin transcription
+      return true;
+    }).toList();
 
     if (pendingTranscription.isEmpty && pendingAnalysis.isEmpty) {
       // ignore: avoid_print
@@ -809,7 +1013,7 @@ class AudioService {
         // ignore: avoid_print
         print('RETRY: Analyse de la note ${note.id}...');
 
-        // Récupérer les fiches existantes pour le contexte
+        // Récupérer les fiches existantes pour la déduplication locale (TitleMatcher)
         final existingFiches = await _databaseService.getAllFiches();
         final fichesContext = existingFiches.map((f) => FicheContext(
           id: f.id!,
@@ -817,10 +1021,7 @@ class AudioService {
           category: f.category.name,
         )).toList();
 
-        final analysis = await _aiSorterService.analyzeText(
-          note.text,
-          existingFiches: fichesContext,
-        );
+        final analysis = await _aiSorterService.analyzeText(note.text);
 
         // Fusion automatique côté application
         final matchingFicheId = TitleMatcher.findMatchingFiche(
@@ -903,6 +1104,14 @@ class AudioService {
       } catch (e) {
         // ignore: avoid_print
         print('RETRY: Échec analyse pour note ${note.id}: $e');
+        // Marquer la note comme erreur pour éviter une boucle infinie de retries
+        try {
+          final failed = note.copyWith(
+            isAnalyzing: false,
+            errorMessage: 'Analyse échouée: $e',
+          );
+          await _databaseService.updateNote(failed);
+        } catch (_) {}
       }
     }
   }
@@ -989,21 +1198,39 @@ class AudioService {
       return false;
     }
 
-    // Vérifier si la musique joue et la mettre en pause si nécessaire
-    try {
-      _musicWasPlayingBeforeRecording = await _localMediaService.isMusicActive();
-      if (_musicWasPlayingBeforeRecording) {
-        await _localMediaService.pause();
+    // Vérifier si la musique joue et la mettre en pause si nécessaire.
+    // Si le flag est déjà true (session dictée multi-segments), la musique
+    // est déjà gérée → on ne re-vérifie pas pour ne pas écraser l'état.
+    if (!_musicWasPlayingBeforeRecording) {
+      try {
+        final rawMusicActive = await _localMediaService.isMusicActive();
+        final cobaltTtsSpeaking = _audioFeedback.isSpeaking;
         // ignore: avoid_print
-        print('RECORD: Musique mise en pause (était en lecture)');
-      } else {
+        print('RECORD: isMusicActive=$rawMusicActive | cobaltTTS=$cobaltTtsSpeaking');
+
+        // Exclure le TTS de Cobalt lui-même
+        _musicWasPlayingBeforeRecording = rawMusicActive && !cobaltTtsSpeaking;
+
+        if (_musicWasPlayingBeforeRecording) {
+          await _localMediaService.pause();
+          // ignore: avoid_print
+          print('RECORD: Musique utilisateur mise en pause');
+        } else if (rawMusicActive && cobaltTtsSpeaking) {
+          // ignore: avoid_print
+          print('RECORD: Audio actif = TTS Cobalt uniquement → pas de pause musique');
+          await _audioFeedback.stop();
+        } else {
+          // ignore: avoid_print
+          print('RECORD: Pas de musique en cours');
+        }
+      } catch (e) {
         // ignore: avoid_print
-        print('RECORD: Pas de musique en cours');
+        print('RECORD: Erreur vérification musique: $e (continue sans pause)');
+        _musicWasPlayingBeforeRecording = false;
       }
-    } catch (e) {
+    } else {
       // ignore: avoid_print
-      print('RECORD: Erreur vérification musique: $e (continue sans pause)');
-      _musicWasPlayingBeforeRecording = false;
+      print('RECORD: Musique déjà trackée (segment dictée), skip check');
     }
 
     try {
@@ -1036,6 +1263,46 @@ class AudioService {
   }
 
   /// Arrête l'enregistrement et traite le fichier audio
+  /// Stoppe l'enregistrement et retourne le chemin du fichier WAV
+  /// SANS creer de VoiceNote ni lancer le pipeline IA.
+  /// Utilise par DictationService pour le mode dictee.
+  Future<String?> stopRecordingRaw() async {
+    if (!_isRecording) return null;
+
+    try {
+      final filePath = await _audioRecorder.stop();
+      _isRecording = false;
+      _recordingStateController.add(false);
+      // NOTE: on ne reprend PAS la musique ici — c'est le rôle de
+      // resumeMusic() appelé explicitement par DictationService à la fin
+      // de la session (pas entre chaque segment intermédiaire).
+      _recordingStartTime = null;
+
+      if (filePath == null) {
+        // ignore: avoid_print
+        print('RECORD: stopRecordingRaw - arret sans fichier');
+        return null;
+      }
+
+      // ignore: avoid_print
+      print('RECORD: stopRecordingRaw → $filePath');
+      return filePath;
+    } catch (e) {
+      // ignore: avoid_print
+      print('RECORD ERREUR stopRecordingRaw: $e');
+      _isRecording = false;
+      _recordingStateController.add(false);
+      return null;
+    }
+  }
+
+  /// Reprend la musique si elle était en lecture avant la session dictée.
+  /// Appelé explicitement par DictationService à la fin de la dictée.
+  Future<void> resumeMusic() => _resumeMusicAfterRecording();
+
+  /// Public wrapper pour DictationService : retourne true si le WAV est silencieux.
+  bool isWavSilent(Uint8List wavData) => _isWavSilent(wavData);
+
   Future<void> stopRecording() async {
     if (!_isRecording) return;
 
@@ -1084,6 +1351,16 @@ class AudioService {
       // Transcrire
       final file = File(filePath);
       final wavData = await file.readAsBytes();
+
+      // Éliminer les enregistrements silencieux avant STT
+      if (_isWavSilent(wavData)) {
+        await _databaseService.deleteNote(note.id!);
+        await file.delete();
+        // ignore: avoid_print
+        print('RECORD: Enregistrement silencieux supprimé');
+        return;
+      }
+
       // ignore: avoid_print
       print('RECORD: Lancement de la transcription Groq...');
       _transcribeAndUpdate(note, wavData);
@@ -1197,14 +1474,23 @@ class AudioService {
     await _bleService.startScan();
   }
 
+  /// Scan rapide de navigation (device picker)
+  Future<void> startBrowseScan() async => _bleService.startBrowseScan();
+  Future<void> stopBrowseScan() async => _bleService.stopBrowseScan();
+
+  /// Déclenche une tentative de reconnexion immédiate (appeler depuis foreground resume)
+  void triggerBleReconnect() {
+    _bleService.triggerReconnect();
+  }
+
   /// Déconnecte l'appareil BLE
   Future<void> disconnectBle() async {
     await _bleService.disconnect();
   }
 
   /// Connecte un appareil BLE spécifique choisi par l'utilisateur
-  Future<void> connectToBleDevice(BluetoothDevice device) async {
-    await _bleService.connectToDevice(device);
+  Future<void> connectToBleDevice(BluetoothDevice device, {String? deviceName}) async {
+    await _bleService.connectToDevice(device, deviceName: deviceName);
   }
 
   /// Stream de l'état de connexion BLE
@@ -1213,6 +1499,15 @@ class AudioService {
 
   /// État actuel de la connexion BLE
   BleConnectionState get bleConnectionState => _bleService.connectionState;
+
+  /// Nom de l'appareil BLE connecté (ex: "Cobalt A3F2")
+  String? get connectedDeviceName => _bleService.connectedDeviceName;
+
+  /// Version firmware de l'appareil connecté (ex: "1.0.0")
+  String? get firmwareVersion => _bleService.firmwareVersion;
+
+  /// Accès au BleService pour le DFU
+  BleService get bleServiceInstance => _bleService;
 
   /// Stream des appareils découverts (pour le device picker)
   Stream<List<ScanResult>> get discoveredDevicesStream =>
@@ -1304,6 +1599,15 @@ class AudioService {
   Future<Map<String, dynamic>?> getSpotifyPlayerState() async {
     return await _localMediaService.spotifyService.getPlayerState();
   }
+
+  /// Contrôles Spotify
+  Future<void> spotifyPlay() async => _localMediaService.spotifyService.play();
+  Future<void> spotifyPause() async => _localMediaService.spotifyService.pause();
+  Future<void> spotifyNext() async => _localMediaService.spotifyService.next();
+  Future<void> spotifyPrevious() async => _localMediaService.spotifyService.previous();
+  Future<void> spotifyLike() async => _localMediaService.spotifyService.likeCurrentTrack();
+  Future<List<Map<String, dynamic>>> spotifyGetDevices() => _localMediaService.spotifyService.getDevices();
+  Future<void> spotifyTransferPlayback(String id) => _localMediaService.spotifyService.transferPlayback(id);
 
   // ---------------------------------------------------------------------------
   // NETTOYAGE

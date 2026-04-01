@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/fiche.dart';
+import '../models/fintecture_transaction.dart';
+import '../models/incoming_message.dart';
 import '../models/voice_note.dart';
 
 /// =============================================================================
@@ -38,7 +40,13 @@ class DatabaseService {
   static const String _databaseName = 'cobalt_voice.db';
 
   /// Version du schéma (pour migrations futures)
-  static const int _databaseVersion = 8;
+  static const int _databaseVersion = 12;
+
+  /// Nom de la table Fintecture
+  static const String _tableFintecture = 'fintecture_transactions';
+
+  /// Nom de la table des messages entrants
+  static const String _tableMessages = 'incoming_messages';
 
   /// Nom de la table des notes vocales
   static const String _tableVoiceNotes = 'voice_notes';
@@ -142,6 +150,7 @@ class DatabaseService {
         event_datetime TEXT,
         contact_name TEXT,
         sentiment TEXT,
+        action_json TEXT,
         fiche_id INTEGER
       )
     ''');
@@ -209,6 +218,33 @@ class DatabaseService {
         phone_number TEXT NOT NULL,
         pending_message TEXT,
         created_at INTEGER NOT NULL
+      )
+    ''');
+
+    // Table Fintecture transactions
+    await db.execute('''
+      CREATE TABLE $_tableFintecture (
+        id TEXT PRIMARY KEY,
+        recipient_name TEXT NOT NULL,
+        recipient_phone TEXT NOT NULL DEFAULT '',
+        amount REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        note TEXT DEFAULT '',
+        payment_url TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        paid_at INTEGER
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE $_tableMessages (
+        id TEXT PRIMARY KEY,
+        sender_name TEXT NOT NULL,
+        message_preview TEXT NOT NULL DEFAULT '',
+        app_source TEXT NOT NULL,
+        app_package TEXT NOT NULL,
+        received_at INTEGER NOT NULL
       )
     ''');
   }
@@ -349,6 +385,45 @@ class DatabaseService {
       await db.execute(
         'ALTER TABLE $_tableVoiceNotes ADD COLUMN sentiment TEXT',
       );
+    }
+
+    // Migration v8 → v9 : ajout du JSON de l'action exécutée
+    if (oldVersion < 9) {
+      await db.execute(
+        'ALTER TABLE $_tableVoiceNotes ADD COLUMN action_json TEXT',
+      );
+    }
+
+    // Migration v9 → v10/v11 : table Fintecture transactions
+    if (oldVersion < 11) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $_tableFintecture (
+          id TEXT PRIMARY KEY,
+          recipient_name TEXT NOT NULL,
+          recipient_phone TEXT NOT NULL DEFAULT '',
+          amount REAL NOT NULL,
+          currency TEXT NOT NULL DEFAULT 'EUR',
+          note TEXT DEFAULT '',
+          payment_url TEXT DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          paid_at INTEGER
+        )
+      ''');
+    }
+
+    // Migration v11 → v12 : table messages entrants
+    if (oldVersion < 12) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $_tableMessages (
+          id TEXT PRIMARY KEY,
+          sender_name TEXT NOT NULL,
+          message_preview TEXT NOT NULL DEFAULT '',
+          app_source TEXT NOT NULL,
+          app_package TEXT NOT NULL,
+          received_at INTEGER NOT NULL
+        )
+      ''');
     }
   }
 
@@ -773,5 +848,91 @@ class DatabaseService {
   /// Force une notification des fiches
   Future<void> refreshFichesStream() async {
     await _notifyFichesListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // OPÉRATIONS CRUD — Fintecture Transactions
+  // ---------------------------------------------------------------------------
+
+  Future<void> insertFintectureTransaction(FintectureTransaction tx) async {
+    final db = await database;
+    await db.insert(
+      _tableFintecture,
+      tx.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> updateFintectureTransactionStatus(
+    String id,
+    FintectureStatus status, {
+    DateTime? paidAt,
+  }) async {
+    final db = await database;
+    final values = <String, dynamic>{'status': status.name};
+    if (paidAt != null) {
+      values['paid_at'] = paidAt.millisecondsSinceEpoch;
+    }
+    await db.update(
+      _tableFintecture,
+      values,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<FintectureTransaction>> getFintectureTransactions() async {
+    final db = await database;
+    final maps = await db.query(
+      _tableFintecture,
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((m) => FintectureTransaction.fromMap(m)).toList();
+  }
+
+  Future<void> deleteFintectureTransaction(String id) async {
+    final db = await database;
+    await db.delete(
+      _tableFintecture,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // INCOMING MESSAGES CRUD
+  // ---------------------------------------------------------------------------
+
+  Future<void> insertMessage(IncomingMessage msg) async {
+    final db = await database;
+    await db.insert(
+      _tableMessages,
+      msg.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<List<IncomingMessage>> getMessages() async {
+    final db = await database;
+    final maps = await db.query(
+      _tableMessages,
+      orderBy: 'received_at DESC',
+      limit: 200,
+    );
+    return maps.map((m) => IncomingMessage.fromMap(m)).toList();
+  }
+
+  Future<void> deleteMessage(String id) async {
+    final db = await database;
+    await db.delete(
+      _tableMessages,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteAllMessages() async {
+    final db = await database;
+    await db.delete(_tableMessages);
   }
 }

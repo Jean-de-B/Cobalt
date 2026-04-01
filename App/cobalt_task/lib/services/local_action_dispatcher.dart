@@ -8,7 +8,7 @@ import 'local_messaging_service.dart';
 import 'local_navigation_service.dart';
 import 'local_media_service.dart';
 import 'local_app_launcher_service.dart';
-import 'paypal_payment_service.dart';
+import 'fintecture_service.dart';
 import 'contact_history_service.dart';
 import 'validated_contacts_service.dart';
 import 'incoming_history_service.dart';
@@ -70,7 +70,7 @@ class LocalActionDispatcher {
   final LocalNavigationService _navigationService;
   final LocalMediaService _mediaService;
   final LocalAppLauncherService _appLauncherService;
-  final PayPalPaymentService _paymentService;
+  final FintectureService _paymentService;
   final ContactHistoryService _contactHistoryService;
   final ValidatedContactsService _validatedContactsService;
   final ContactLookupService _contactLookupService;
@@ -86,7 +86,7 @@ class LocalActionDispatcher {
     LocalNavigationService? navigationService,
     LocalMediaService? mediaService,
     LocalAppLauncherService? appLauncherService,
-    PayPalPaymentService? paymentService,
+    FintectureService? paymentService,
     ContactHistoryService? contactHistoryService,
     ValidatedContactsService? validatedContactsService,
     ContactLookupService? contactLookupService,
@@ -100,7 +100,7 @@ class LocalActionDispatcher {
         _navigationService = navigationService ?? LocalNavigationService(),
         _mediaService = mediaService ?? LocalMediaService(),
         _appLauncherService = appLauncherService ?? LocalAppLauncherService(),
-        _paymentService = paymentService ?? PayPalPaymentService(),
+        _paymentService = paymentService ?? FintectureService(),
         _contactHistoryService = contactHistoryService ?? ContactHistoryService(),
         _validatedContactsService = validatedContactsService ?? ValidatedContactsService(),
         _contactLookupService = contactLookupService ?? ContactLookupService();
@@ -616,6 +616,7 @@ class LocalActionDispatcher {
       controlType: action.controlType,
       query: action.query,
       app: action.app,
+      deviceType: action.deviceType,
     );
 
     if (result.success) {
@@ -652,16 +653,16 @@ class LocalActionDispatcher {
     }
   }
 
-  /// Gère les paiements (PayPal)
+  /// Gère les paiements (Fintecture Request-to-Pay)
   Future<ActionResult> _handlePayment(PaymentAction action) async {
     // ignore: avoid_print
     print('[Dispatcher] Paiement: ${action.amount}€ → ${action.recipient}');
 
-    // Vérifier que PayPal est configuré
-    if (!_paymentService.isConfigured) {
+    // Vérifier que l'IBAN est configuré
+    if (!await _paymentService.hasIban()) {
       return ActionResult.failure(
         ActionIntent.payment,
-        'PayPal non configuré',
+        'IBAN non configuré. Configurez votre IBAN dans les paramètres de paiement.',
       );
     }
 
@@ -671,35 +672,49 @@ class LocalActionDispatcher {
       // ignore: avoid_print
       print('[Dispatcher] Contact validé: ${validated.displayName} → ${validated.phoneNumber}');
 
-      final result = await _paymentService.sendPayment(
-        phone: validated.phoneNumber,
+      final tx = await _paymentService.createRequestToPay(
+        recipientName: validated.displayName,
+        recipientPhone: validated.phoneNumber,
         amount: action.amount,
-        note: action.note,
+        note: action.note ?? '',
       );
 
-      if (result.success) {
+      if (tx != null && tx.paymentUrl.isNotEmpty) {
+        // Envoyer le lien de paiement par messagerie
+        final msg = 'Salut ${validated.displayName}, '
+            'peux-tu me rembourser ${tx.formattedAmount}'
+            '${action.note != null ? " (${action.note})" : ""} ? '
+            '${tx.paymentUrl}';
+
+        await _messagingService.sendMessage(
+          app: MessagingApp.whatsapp,
+          recipient: validated.displayName,
+          message: msg,
+        );
+
         return ActionResult.success(
           ActionIntent.payment,
-          'PayPal ouvert pour ${action.amount}€ à ${validated.displayName}',
+          'Demande de ${tx.formattedAmount} envoyée à ${validated.displayName}',
           {
             'contact': validated.displayName,
             'phone': validated.phoneNumber,
             'amount': action.amount,
             'note': action.note,
+            'payment_url': tx.paymentUrl,
           },
         );
       } else {
         return ActionResult.failure(
           ActionIntent.payment,
-          result.error ?? 'Impossible d\'ouvrir PayPal',
+          'Impossible de créer la demande de paiement',
         );
       }
     }
 
-    // Contact non validé → queue pending validation (sans message en attente)
+    // Contact non validé → queue pending validation
     return await _queueUnvalidatedContact(
       action.recipient,
-      '', // pas de message texte pour un paiement
+      '',
       ActionIntent.payment,
     );
   }
@@ -765,6 +780,8 @@ class LocalActionDispatcher {
       MediaControlType.previous => 'Piste précédente',
       MediaControlType.stop => 'Musique arrêtée',
       MediaControlType.playSearch => 'Musique lancée !',
+      MediaControlType.like => 'Titre liké !',
+      MediaControlType.transfer => 'Lecture transférée',
     };
   }
 }

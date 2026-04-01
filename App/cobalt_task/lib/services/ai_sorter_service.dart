@@ -314,17 +314,15 @@ EXEMPLES:
   /// Vérifie si le service est initialisé
   bool get isInitialized => _apiKey != null && _apiKey!.isNotEmpty;
 
-  /// Analyse un texte transcrit et retourne une catégorisation structurée
+  /// Analyse un texte transcrit et retourne une catégorisation structurée.
   ///
-  /// [transcribedText] Le texte à analyser
-  /// [existingFiches] Liste des fiches existantes pour le contexte (optionnel)
+  /// La déduplication des fiches (append vs create) est gérée localement
+  /// par [TitleMatcher] dans audio_service — les fiches existantes ne sont
+  /// PAS envoyées à l'API pour éviter de consommer inutilement le quota TPM.
   ///
   /// En cas d'échec, retourne un AnalysisResult par défaut (MEMO)
   /// pour ne pas bloquer le flux de l'application.
-  Future<AnalysisResult> analyzeText(
-    String transcribedText, {
-    List<FicheContext>? existingFiches,
-  }) async {
+  Future<AnalysisResult> analyzeText(String transcribedText) async {
     if (!isInitialized) {
       // ignore: avoid_print
       print('AI_SORTER: Service non initialisé, utilisation du fallback');
@@ -339,15 +337,6 @@ EXEMPLES:
       // ignore: avoid_print
       print('AI_SORTER: Analyse du texte avec Llama 3...');
 
-      // Construire le message utilisateur avec le contexte des fiches
-      String userMessage = transcribedText;
-      if (existingFiches != null && existingFiches.isNotEmpty) {
-        final fichesJson = existingFiches.map((f) => f.toJson()).toList();
-        userMessage = 'FICHES_EXISTANTES: ${jsonEncode(fichesJson)}\n\nTRANSCRIPTION: $transcribedText';
-        // ignore: avoid_print
-        print('AI_SORTER: ${existingFiches.length} fiches en contexte');
-      }
-
       final uri = Uri.parse('$_baseUrl$_chatEndpoint');
       final response = await _httpClient.post(
         uri,
@@ -359,7 +348,7 @@ EXEMPLES:
           'model': _model,
           'messages': [
             {'role': 'system', 'content': _systemPrompt},
-            {'role': 'user', 'content': userMessage},
+            {'role': 'user', 'content': transcribedText},
           ],
           'temperature': 0.1, // Très déterministe pour du JSON
           'max_tokens': 500,
@@ -371,10 +360,12 @@ EXEMPLES:
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return _parseResponse(response.body, transcribedText);
+      } else if (response.statusCode == 429) {
+        _logRateLimit(response.body);
+        return _postProcessResult(AnalysisResult.defaultMemo(transcribedText));
       } else {
         // ignore: avoid_print
-        print('AI_SORTER: Erreur API ${response.statusCode}');
-        print('AI_SORTER: Corps de la réponse: ${response.body}');
+        print('AI_SORTER: ⚠ Erreur API ${response.statusCode}: ${response.body}');
         return _postProcessResult(AnalysisResult.defaultMemo(transcribedText));
       }
     } on SocketException catch (e) {
@@ -388,6 +379,31 @@ EXEMPLES:
     }
   }
 
+  /// Logue clairement un rate limit 429 avec les chiffres extraits du corps
+  void _logRateLimit(String body) {
+    try {
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      final msg = (json['error'] as Map<String, dynamic>?)?['message'] as String? ?? body;
+      // Extraire "Limit X, Used Y, Requested Z" si présent
+      final limitMatch = RegExp(r'Limit (\d+), Used (\d+), Requested (\d+)').firstMatch(msg);
+      final retryMatch = RegExp(r'try again in ([\d.]+s)').firstMatch(msg);
+      if (limitMatch != null) {
+        final limit = limitMatch.group(1);
+        final used = limitMatch.group(2);
+        final requested = limitMatch.group(3);
+        final retry = retryMatch?.group(1) ?? '?';
+        // ignore: avoid_print
+        print('AI_SORTER: 🚨 RATE LIMIT 429 — TPM: $used/$limit utilisés, requis: $requested. Retry dans $retry');
+      } else {
+        // ignore: avoid_print
+        print('AI_SORTER: 🚨 RATE LIMIT 429 — $msg');
+      }
+    } catch (_) {
+      // ignore: avoid_print
+      print('AI_SORTER: 🚨 RATE LIMIT 429 — $body');
+    }
+  }
+
   /// Parse la réponse de l'API et extrait le JSON
   AnalysisResult _parseResponse(String responseBody, String originalText) {
     try {
@@ -398,6 +414,16 @@ EXEMPLES:
         // ignore: avoid_print
         print('AI_SORTER: Réponse API sans choices');
         return _postProcessResult(AnalysisResult.defaultMemo(originalText));
+      }
+
+      // Logue l'usage de tokens à chaque requête réussie
+      final usage = responseJson['usage'] as Map<String, dynamic>?;
+      if (usage != null) {
+        final prompt = usage['prompt_tokens'] ?? '?';
+        final completion = usage['completion_tokens'] ?? '?';
+        final total = usage['total_tokens'] ?? '?';
+        // ignore: avoid_print
+        print('AI_SORTER: 📊 Tokens — prompt: $prompt | completion: $completion | total: $total / 6000 TPM');
       }
 
       final message = choices[0]['message'] as Map<String, dynamic>?;

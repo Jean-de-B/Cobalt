@@ -52,6 +52,7 @@ class AssistantActivity : Activity() {
             )
         }
 
+        // MODE ASSISTANT : overlay bleu + pipeline IA
         // Afficher l'overlay immediatement pour feedback visuel instantane
         // (Flutter gerera l'enregistrement une fois le MethodChannel pret)
         try {
