@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'audio_feedback_service.dart';
+import 'settings_service.dart';
 
 /// =============================================================================
 /// local_navigation_service.dart
@@ -122,8 +123,14 @@ class LocalNavigationService {
       // Tenter le briefing vocal AVANT le lancement Maps
       final briefingSpoken = await _tryVocalBriefing(destination, travelMode);
 
-      // Essayer Google Maps d'abord
-      final result = await _launchGoogleMaps(destination, travelMode);
+      // Lancer l'app de navigation choisie dans les paramètres
+      final navApp = SettingsService().navigationApp;
+      final NavigationResult result;
+      if (navApp == 'waze') {
+        result = await _launchWaze(destination);
+      } else {
+        result = await _launchGoogleMaps(destination, travelMode);
+      }
 
       if (result.success) {
         return NavigationResult.success(briefingSpoken: briefingSpoken);
@@ -397,10 +404,14 @@ class LocalNavigationService {
 
   /// Convertit le mode de transport en code Google Maps
   String _getTravelMode(String? mode) {
-    if (mode == null) return 'b'; // Défaut: vélo
+    if (mode == null) {
+      // Lire le mode par défaut depuis les paramètres
+      final defaultMode = SettingsService().defaultTransport;
+      return _travelModes[defaultMode] ?? 'b';
+    }
 
     final normalizedMode = mode.toLowerCase().trim();
-    return _travelModes[normalizedMode] ?? 'd';
+    return _travelModes[normalizedMode] ?? 'b';
   }
 
   /// Lance Google Maps avec la destination
@@ -437,6 +448,39 @@ class LocalNavigationService {
     }
 
     return NavigationResult.failure('Google Maps non disponible');
+  }
+
+  /// Lance Waze avec la destination
+  Future<NavigationResult> _launchWaze(String destination) async {
+    final encodedDestination = Uri.encodeComponent(destination);
+    // ignore: avoid_print
+    print('[Navigation] Waze -> $destination');
+
+    // Deep link natif Waze (ouvre l'app directement)
+    final wazeUri = Uri.parse('waze://?q=$encodedDestination&navigate=yes');
+    if (await canLaunchUrl(wazeUri)) {
+      await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
+      // ignore: avoid_print
+      print('[Navigation] Waze lancé (deep link)');
+      return NavigationResult.success();
+    }
+
+    // Fallback intent Android (cherche le package Waze)
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: 'https://waze.com/ul?q=$encodedDestination&navigate=yes',
+        package: 'com.waze',
+      );
+      await intent.launch();
+      // ignore: avoid_print
+      print('[Navigation] Waze lancé (intent)');
+      return NavigationResult.success();
+    } catch (e) {
+      // ignore: avoid_print
+      print('[Navigation] Waze non disponible ($e), fallback Google Maps');
+      return await _launchGoogleMaps(destination, _getTravelMode(null));
+    }
   }
 
   /// Convertit le code court en nom complet pour l'URL web

@@ -838,112 +838,45 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildGoogleIndicator() {
-    return StreamBuilder<bool>(
-      stream: _audioService.googleConnectionStateStream,
-      initialData: _audioService.isGoogleConnected,
-      builder: (context, snapshot) {
-        final isConnected = snapshot.data ?? false;
-
-        return Tooltip(
-          message: isConnected
-              ? 'Google connecte: ${_audioService.googleUserEmail ?? ""}'
-              : 'Appuyez pour connecter Google',
-          child: InkWell(
-            onTap: () => _showGoogleMenu(context, isConnected),
-            borderRadius: BorderRadius.circular(20),
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Icon(
-                isConnected ? Icons.cloud_done : Icons.cloud_off,
-                color: isConnected ? AppColors.bleConnected : AppColors.textSecondary,
-                size: 22,
-              ),
-            ),
-          ),
-        );
-      },
+    return Tooltip(
+      message: 'Historique des actions',
+      child: InkWell(
+        onTap: () => _showHistorySheet(context),
+        borderRadius: BorderRadius.circular(20),
+        child: const Padding(
+          padding: EdgeInsets.all(8.0),
+          child: Icon(Icons.list_alt, color: AppColors.textSecondary, size: 22),
+        ),
+      ),
     );
   }
 
-  void _showGoogleMenu(BuildContext context, bool isConnected) {
-    if (isConnected) {
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: Colors.transparent,
-        isScrollControlled: true,
-        builder: (context) => GestureDetector(
-          onTap: () => Navigator.pop(context),
-          behavior: HitTestBehavior.opaque,
-          child: GestureDetector(
-            onTap: () {}, // empêche la propagation vers le parent
-            child: DraggableScrollableSheet(
-              initialChildSize: 0.45,
-              minChildSize: 0.25,
-              maxChildSize: 0.92,
-              expand: false,
-              builder: (context, scrollController) => _GoogleSheet(
-                audioService: _audioService,
-                scrollController: scrollController,
-                getCategoryIcon: _getCategoryIcon,
-                getCategoryColor: _getCategoryColor,
-                getCategoryLabel: _getCategoryLabel,
-              ),
+  void _showHistorySheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => GestureDetector(
+        onTap: () => Navigator.pop(context),
+        behavior: HitTestBehavior.opaque,
+        child: GestureDetector(
+          onTap: () {},
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.45,
+            minChildSize: 0.25,
+            maxChildSize: 0.92,
+            expand: false,
+            builder: (context, scrollController) => _GoogleSheet(
+              audioService: _audioService,
+              scrollController: scrollController,
+              getCategoryIcon: _getCategoryIcon,
+              getCategoryColor: _getCategoryColor,
+              getCategoryLabel: _getCategoryLabel,
             ),
           ),
         ),
-      );
-    } else {
-      showModalBottomSheet(
-        context: context,
-        backgroundColor: AppColors.surface,
-        builder: (sheetContext) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Text(
-                  'Connectez Google pour synchroniser Tasks, Calendar, Contacts et Docs',
-                  style: AppTextStyles.metadata,
-                  textAlign: TextAlign.center,
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.login, size: 18),
-                    label: const Text('Connecter Google'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF4285F4),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: () async {
-                      final messenger = ScaffoldMessenger.of(sheetContext);
-                      Navigator.pop(sheetContext);
-                      final success = await _audioService.signInGoogle();
-                      if (mounted && success) {
-                        messenger.showSnackBar(
-                          const SnackBar(
-                            content: Text('Connecte a Google!'),
-                            backgroundColor: Colors.green,
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+      ),
+    );
   }
 
   IconData _getCategoryIcon(NoteCategory category) {
@@ -1745,43 +1678,12 @@ class _GoogleSheet extends StatelessWidget {
               ),
             ),
           ),
-          // Header: Google label + email + logout icon
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
-              children: [
-                const Icon(Icons.cloud_done, color: Color(0xFF4285F4), size: 18),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        audioService.googleUserName ?? 'Google',
-                        style: const TextStyle(
-                          color: Color(0xFF4285F4),
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                      ),
-                      if (audioService.googleUserEmail != null)
-                        Text(
-                          audioService.googleUserEmail!,
-                          style: AppTextStyles.metadata.copyWith(fontSize: 11),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                    ],
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () async {
-                    Navigator.pop(context);
-                    await audioService.signOutGoogle();
-                  },
-                  child: const Icon(Icons.logout, color: Colors.red, size: 18),
-                ),
-              ],
+          // Header
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Historique', style: AppTextStyles.heading),
             ),
           ),
           const Divider(color: AppColors.border, height: 1),

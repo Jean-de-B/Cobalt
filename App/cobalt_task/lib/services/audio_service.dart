@@ -24,6 +24,7 @@ import 'local_media_service.dart';
 import 'sherpa_transcription_service.dart';
 import 'audio_feedback_service.dart';
 import 'foreground_service.dart';
+import 'settings_service.dart';
 
 /// =============================================================================
 /// audio_service.dart
@@ -490,7 +491,7 @@ class AudioService {
         try {
           final result = await _transcriptionService.transcribeBytes(
             wavData,
-            language: 'fr',
+            language: SettingsService().language,
           );
           transcribedText = result.text;
           usedWhisper = true;
@@ -1252,6 +1253,9 @@ class AudioService {
       _recordingStartTime = DateTime.now();
       _recordingStateController.add(true);
 
+      // Son de début d'enregistrement
+      _audioFeedback.playStartSound();
+
       // ignore: avoid_print
       print('RECORD: Enregistrement démarré → $filePath');
       return true;
@@ -1310,6 +1314,9 @@ class AudioService {
       final filePath = await _audioRecorder.stop();
       _isRecording = false;
       _recordingStateController.add(false);
+
+      // Son de fin d'enregistrement
+      _audioFeedback.playStopSound();
 
       // Reprendre la musique après l'enregistrement
       _resumeMusicAfterRecording();

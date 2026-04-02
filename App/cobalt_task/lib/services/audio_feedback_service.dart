@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'settings_service.dart';
 
 /// =============================================================================
 /// audio_feedback_service.dart
@@ -41,7 +43,8 @@ class AudioFeedbackService {
 
     try {
       // Configuration du TTS
-      await _tts.setLanguage('fr-FR');
+      final lang = SettingsService().language;
+      await _tts.setLanguage(lang == 'en' ? 'en-US' : 'fr-FR');
       await _tts.setSpeechRate(0.5); // Vitesse normale
       await _tts.setVolume(1.0);
       await _tts.setPitch(1.0);
@@ -70,7 +73,10 @@ class AudioFeedbackService {
 
   /// Prononce un texte de confirmation
   Future<void> speak(String text) async {
-    if (!_enabled || !_isInitialized) return;
+    if (!_enabled || !_isInitialized || !SettingsService().ttsEnabled) return;
+    // Appliquer la langue à chaque appel (peut changer dans les settings)
+    final lang = SettingsService().language;
+    await _tts.setLanguage(lang == 'en' ? 'en-US' : 'fr-FR');
 
     try {
       await _tts.speak(text);
@@ -155,6 +161,23 @@ class AudioFeedbackService {
       default:
         return details;
     }
+  }
+
+  /// Bip de début d'enregistrement
+  Future<void> playStartSound() async {
+    if (!SettingsService().confirmationSound) return;
+    try {
+      await SystemSound.play(SystemSoundType.click);
+      await HapticFeedback.mediumImpact();
+    } catch (_) {}
+  }
+
+  /// Bip de fin d'enregistrement
+  Future<void> playStopSound() async {
+    if (!SettingsService().confirmationSound) return;
+    try {
+      await HapticFeedback.heavyImpact();
+    } catch (_) {}
   }
 
   /// Annonce une erreur

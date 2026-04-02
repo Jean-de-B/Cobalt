@@ -66,6 +66,23 @@ class SettingsService {
   static const Map<String, String> calendarServices = {
     'google': 'Google Calendar',
     'samsung': 'Samsung Calendar',
+    'calendly': 'Calendly',
+  };
+
+  // ---------------------------------------------------------------------------
+  // NOTES
+  // ---------------------------------------------------------------------------
+
+  String get notesService => _prefs?.getString('notes_service') ?? 'google';
+  set notesService(String v) {
+    _prefs?.setString('notes_service', v);
+    _notify();
+  }
+
+  static const Map<String, String> notesServices = {
+    'google': 'Google Docs',
+    'samsung': 'Samsung Notes',
+    'notion': 'Notion',
   };
 
   // ---------------------------------------------------------------------------

@@ -248,6 +248,12 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="google.navigation"/>
         </intent>
+        <!-- Waze Deep Link -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="waze"/>
+        </intent>
+        <package android:name="com.waze" />
         <intent>
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="https"/>

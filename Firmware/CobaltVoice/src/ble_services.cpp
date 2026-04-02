@@ -283,8 +283,9 @@ void BleServices::update() {
     switch (_postConnectState) {
 
     case PC_WAIT_STABLE:
-        // Laisser 200ms au stack BLE pour stabiliser la connexion
-        if (elapsed >= 200) {
+        // Laisser 500ms au stack BLE pour stabiliser la connexion
+        // (Samsung a besoin de plus de temps pour s'adapter)
+        if (elapsed >= 500) {
             _postConnectState = PC_CONN_PARAMS;
             _postConnectTimer = millis();
         }

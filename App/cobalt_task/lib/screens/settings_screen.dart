@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../constants/app_constants.dart';
 import '../services/settings_service.dart';
+import '../services/audio_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -11,6 +12,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _settings = SettingsService();
+  final _audioService = AudioService();
 
   @override
   Widget build(BuildContext context) {
@@ -58,6 +60,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: _settings.calendarService,
             options: SettingsService.calendarServices,
             onChanged: (v) => setState(() => _settings.calendarService = v),
+          ),
+
+          _buildServiceRow(
+            icon: Icons.note_alt,
+            color: const Color(0xFFFFB300),
+            label: 'Notes',
+            value: _settings.notesService,
+            options: SettingsService.notesServices,
+            onChanged: (v) => setState(() => _settings.notesService = v),
           ),
 
           _buildServiceRow(
@@ -130,6 +141,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: 'Se connecte au bracelet Cobalt au démarrage',
             value: _settings.autoConnectBracelet,
             onChanged: (v) => setState(() => _settings.autoConnectBracelet = v),
+          ),
+
+          const SizedBox(height: 24),
+
+          // === COMPTES ===
+          _sectionTitle('Comptes'),
+
+          // Google
+          StreamBuilder<bool>(
+            stream: _audioService.googleConnectionStateStream,
+            initialData: _audioService.isGoogleConnected,
+            builder: (context, snapshot) {
+              final connected = snapshot.data ?? false;
+              return _buildAccountRow(
+                icon: Icons.cloud,
+                color: const Color(0xFF4285F4),
+                label: 'Google',
+                subtitle: connected
+                    ? _audioService.googleUserEmail ?? 'Connecté'
+                    : 'Calendrier, Tasks, Docs',
+                connected: connected,
+                onConnect: () async {
+                  await _audioService.signInGoogle();
+                  setState(() {});
+                },
+                onDisconnect: () async {
+                  await _audioService.signOutGoogle();
+                  setState(() {});
+                },
+              );
+            },
+          ),
+
+          // Spotify
+          StreamBuilder<bool>(
+            stream: _audioService.spotifyConnectionStream,
+            initialData: _audioService.isSpotifyConnected,
+            builder: (context, snapshot) {
+              final connected = snapshot.data ?? false;
+              return _buildAccountRow(
+                icon: Icons.music_note,
+                color: const Color(0xFF1DB954),
+                label: 'Spotify',
+                subtitle: connected ? 'Connecté' : 'Contrôle musical',
+                connected: connected,
+                onConnect: () => _audioService.connectSpotify(),
+                onDisconnect: () async {
+                  await _audioService.disconnectSpotify();
+                  setState(() {});
+                },
+              );
+            },
           ),
 
           const SizedBox(height: 24),
@@ -291,6 +354,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
             }),
             const SizedBox(height: 8),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAccountRow({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required String subtitle,
+    required bool connected,
+    required VoidCallback onConnect,
+    required VoidCallback onDisconnect,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+          leading: Icon(icon, color: color, size: 20),
+          title: Text(label, style: const TextStyle(
+            color: AppColors.textPrimary, fontSize: 14)),
+          subtitle: Text(subtitle, style: const TextStyle(
+            color: AppColors.textTertiary, fontSize: 11)),
+          trailing: connected
+              ? GestureDetector(
+                  onTap: onDisconnect,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text('Déconnecter',
+                        style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.w500)),
+                  ),
+                )
+              : GestureDetector(
+                  onTap: onConnect,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text('Connecter',
+                        style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500)),
+                  ),
+                ),
         ),
       ),
     );

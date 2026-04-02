@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/app_constants.dart';
+import 'settings_service.dart';
 
 /// =============================================================================
 /// ble_service.dart
@@ -452,11 +453,24 @@ class BleService {
       _connectedDevice = device;
       _connectedDeviceName ??= device.platformName;
 
-      // Le firmware gère conn params, PHY, DLE, MTU de façon non-bloquante.
-      // Côté app : on enchaîne directement discover → subscribe → read.
-      // Le MTU est négocié automatiquement par le stack Android lors du connect.
+      // Icône verte immédiatement (feedback utilisateur instantané)
+      _updateState(BleConnectionState.connected);
 
-      // Négocier le MTU si pas encore fait par le stack
+      // Laisser le firmware terminer son post-connect setup
+      // (conn params, PHY, DLE) avant de faire quoi que ce soit.
+      // Le firmware met ~500ms (wait_stable 200ms + conn_params + PHY 150ms + DLE 100ms).
+      // ignore: avoid_print
+      print('BLE: Attente setup firmware (800ms)...');
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      // Vérifier qu'on est toujours connecté après l'attente
+      if (!device.isConnected) {
+        // ignore: avoid_print
+        print('BLE: Déconnecté pendant le setup firmware → retry');
+        throw Exception('Déconnexion pendant setup');
+      }
+
+      // Négocier le MTU (le firmware attend notre requestMtu dans PC_WAIT_MTU)
       await _negotiateMtu(device);
 
       // Découvrir les services
@@ -465,13 +479,22 @@ class BleService {
       // Souscrire aux notifications
       await _subscribeToNotifications();
 
-      // Lire batterie et firmware version
-      await readBatteryLevel();
-      await readFirmwareVersion();
+      // Lire batterie et firmware version (non-bloquant)
+      try { await readBatteryLevel(); } catch (e) {
+        // ignore: avoid_print
+        print('BLE: Erreur lecture batterie (retry dans 5s): $e');
+        // Retry après 5s si la connexion est toujours active
+        Future.delayed(const Duration(seconds: 5), () {
+          if (isConnected) readBatteryLevel();
+        });
+      }
+      try { await readFirmwareVersion(); } catch (e) {
+        // ignore: avoid_print
+        print('BLE: Erreur lecture firmware version: $e');
+      }
 
       // ignore: avoid_print
-      print('BLE: Configuration terminée, état -> connected');
-      _updateState(BleConnectionState.connected);
+      print('BLE: Configuration terminée');
     } catch (e) {
       // ignore: avoid_print
       print('BLE: Erreur de connexion -> $e');
@@ -985,10 +1008,13 @@ class BleService {
 
   /// Lance un scan continu de reconnexion pour le device connu.
   /// Le scan tourne en boucle jusqu'à ce que le device soit retrouvé.
-  /// Nombre max de tentatives avant de passer en veille longue
-  static const int _maxFastRetries = 5;
-  /// Intervalle de veille longue (2 minutes)
-  static const int _slowRetrySec = 120;
+  /// Phase 1 : scan continu agressif (couvre la fenêtre d'advertising firmware)
+  static const int _fastScanDurationSec = 30;
+  /// Phase 2 : scan périodique en veille
+  static const int _slowScanDurationSec = 15;
+  static const int _slowRetryIntervalSec = 60;
+  /// Nombre de cycles rapides avant de passer en veille
+  static const int _maxFastCycles = 6; // 6 × 30s = 3 minutes
 
   void _scheduleReconnect() {
     if (!_autoReconnectEnabled) return;
@@ -996,26 +1022,17 @@ class BleService {
 
     _reconnectAttempts++;
 
-    // Backoff : 1s → 3s → 5s → 10s → 15s → puis veille longue (2min)
-    final int delaySec;
-    if (_reconnectAttempts <= 1) {
-      delaySec = 1;
-    } else if (_reconnectAttempts <= 3) {
-      delaySec = 3;
-    } else if (_reconnectAttempts <= _maxFastRetries) {
-      delaySec = 10;
-    } else {
-      delaySec = _slowRetrySec;
-    }
+    final bool isFast = _reconnectAttempts <= _maxFastCycles;
+    final int delaySec = isFast ? 1 : _slowRetryIntervalSec;
 
-    final mode = _reconnectAttempts > _maxFastRetries ? 'veille' : 'actif';
     // ignore: avoid_print
-    print('BLE: Reconnexion dans ${delaySec}s (tentative #$_reconnectAttempts, mode $mode)');
+    print('BLE: Reconnexion dans ${delaySec}s (cycle #$_reconnectAttempts, mode ${isFast ? "rapide" : "veille"})');
 
-    // Au-delà des tentatives rapides, repasser en disconnected (icône grise, pas orange)
-    if (_reconnectAttempts > _maxFastRetries) {
+    // En mode veille, icône grise
+    if (!isFast) {
       _updateState(BleConnectionState.disconnected);
     }
+
 
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(seconds: delaySec), () {
@@ -1027,20 +1044,23 @@ class BleService {
     });
   }
 
-  /// Scan unique de 10s. Si pas trouvé → _scheduleReconnect avec backoff.
+  /// Scan avec durée adaptée au cycle (long en rapide, court en veille).
+  /// Pas de pause inter-scan en mode rapide : on enchaîne immédiatement.
   Future<void> _startContinuousScan() async {
     if (!_autoReconnectEnabled) return;
     if (_selectedDeviceId == null) return;
     if (_connectionState == BleConnectionState.connected ||
         _connectionState == BleConnectionState.connecting) return;
 
-    // N'afficher l'état scanning que pendant les tentatives rapides
-    if (_reconnectAttempts <= _maxFastRetries) {
+    final bool isFast = _reconnectAttempts <= _maxFastCycles;
+    final int scanDuration = isFast ? _fastScanDurationSec : _slowScanDurationSec;
+
+    if (isFast) {
       _updateState(BleConnectionState.scanning);
     }
 
     // ignore: avoid_print
-    print('BLE: Scan pour $_selectedDeviceId (tentative #$_reconnectAttempts)...');
+    print('BLE: Scan ${scanDuration}s pour $_selectedDeviceId (cycle #$_reconnectAttempts)...');
 
     await FlutterBluePlus.stopScan();
     _scanSubscription?.cancel();
@@ -1064,17 +1084,16 @@ class BleService {
     });
 
     await FlutterBluePlus.startScan(
-      timeout: const Duration(seconds: 10),
+      timeout: Duration(seconds: scanDuration),
       androidUsesFineLocation: true,
     );
 
     // Attendre la fin du scan
-    await Future.delayed(const Duration(seconds: 11));
+    await Future.delayed(Duration(seconds: scanDuration + 1));
 
     if (!found && _autoReconnectEnabled &&
         _connectionState != BleConnectionState.connected &&
         _connectionState != BleConnectionState.connecting) {
-      // Planifier la prochaine tentative avec backoff
       _scheduleReconnect();
     }
   }
@@ -1105,8 +1124,8 @@ class BleService {
       }
     });
 
-    // Auto-reconnexion au démarrage si un device est mémorisé
-    if (_selectedDeviceId != null) {
+    // Auto-reconnexion au démarrage si un device est mémorisé ET setting activé
+    if (_selectedDeviceId != null && SettingsService().autoConnectBracelet) {
       // ignore: avoid_print
       print('BLE: Device connu au démarrage → reconnexion automatique');
       _autoReconnectEnabled = true;

@@ -96,10 +96,18 @@ class VoiceInputProcessor {
     print('[Processor] GroqClient configuré: ${_groqClient.isConfigured}');
 
     try {
-      // Étape 1: Analyser la transcription avec Groq
-      // ignore: avoid_print
-      print('[Processor] Appel à GroqClient.analyzeWithRetry...');
-      final action = await _groqClient.analyzeWithRetry(transcript);
+      // Étape 1: Pré-classification locale (skip API si commande simple)
+      final localAction = _tryLocalClassification(transcript);
+      final AiAction action;
+      if (localAction != null) {
+        action = localAction;
+        // ignore: avoid_print
+        print('[Processor] Classification LOCALE (skip API): ${action.intent}');
+      } else {
+        // ignore: avoid_print
+        print('[Processor] Appel à GroqClient.analyzeWithRetry...');
+        action = await _groqClient.analyzeWithRetry(transcript);
+      }
       // ignore: avoid_print
       print('[Processor] Action détectée: ${action.intent} (${action.runtimeType})');
       // ignore: avoid_print
@@ -141,6 +149,82 @@ class VoiceInputProcessor {
         error: e.toString(),
       );
     }
+  }
+
+  /// Pré-classification locale par regex.
+  /// Retourne null si la commande est trop complexe pour être classifiée localement.
+  AiAction? _tryLocalClassification(String transcript) {
+    final t = transcript.trim().toLowerCase();
+
+    // --- MEDIA : pause / play / next / previous / stop ---
+    if (RegExp(r'^(mets?\s+)?pause$').hasMatch(t) ||
+        t == 'stop la musique' || t == 'arrête la musique') {
+      return const MediaAction(reasoning: 'Pause (local)', controlType: MediaControlType.pause);
+    }
+    if (RegExp(r'^(lance|reprends?|play|lecture)(\s+la\s+musique)?$').hasMatch(t)) {
+      return const MediaAction(reasoning: 'Play (local)', controlType: MediaControlType.play);
+    }
+    if (RegExp(r'^(suivant|next|piste suivante|titre suivant)$').hasMatch(t)) {
+      return const MediaAction(reasoning: 'Next (local)', controlType: MediaControlType.next);
+    }
+    if (RegExp(r'^(précédent|previous|piste précédente|titre précédent)$').hasMatch(t)) {
+      return const MediaAction(reasoning: 'Previous (local)', controlType: MediaControlType.previous);
+    }
+    if (t == 'stop' || t == 'arrête') {
+      return const MediaAction(reasoning: 'Stop (local)', controlType: MediaControlType.stop);
+    }
+    if (RegExp(r'^like(\s+(ce|le|this)\s+(titre|morceau|track|son))?$').hasMatch(t)) {
+      return const MediaAction(reasoning: 'Like (local)', controlType: MediaControlType.like);
+    }
+
+    // --- VOLUME ---
+    if (RegExp(r'^(monte|augmente|plus fort|volume\s*up)(\s+le\s+(son|volume))?$').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Vol+ (local)', controlType: SystemControlType.volumeUp);
+    }
+    if (RegExp(r'^(baisse|diminue|moins fort|volume\s*down)(\s+le\s+(son|volume))?$').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Vol- (local)', controlType: SystemControlType.volumeDown);
+    }
+    if (RegExp(r'^(son\s+à\s+fond|volume\s+(à\s+fond|max|100))$').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Vol max (local)', controlType: SystemControlType.volumeSet, value: 100);
+    }
+    if (RegExp(r'^(coupe\s+le\s+son|mute|muet|silence)$').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Mute (local)', controlType: SystemControlType.volumeMute);
+    }
+
+    // --- LAMPE ---
+    if (RegExp(r'^(allume|active)\s+(la\s+)?(lampe|torche|flash)').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Lampe on (local)', controlType: SystemControlType.flashlightOn);
+    }
+    if (RegExp(r'^(éteins?|désactive|coupe)\s+(la\s+)?(lampe|torche|flash)').hasMatch(t)) {
+      return const SystemControlAction(reasoning: 'Lampe off (local)', controlType: SystemControlType.flashlightOff);
+    }
+
+    // --- APPEL ---
+    final callMatch = RegExp(r'^appell?e\s+(.+)$').firstMatch(t);
+    if (callMatch != null) {
+      final contact = callMatch.group(1)!.trim();
+      return CallAction(reasoning: 'Appel (local)', contact: contact);
+    }
+
+    // --- TIMER ---
+    final timerMatch = RegExp(r'timer?\s+(?:de\s+)?(\d+)\s*(min|minute|sec|seconde|h|heure)').firstMatch(t);
+    if (timerMatch != null) {
+      final value = int.parse(timerMatch.group(1)!);
+      final unit = timerMatch.group(2)!;
+      final seconds = unit.startsWith('h') ? value * 3600
+          : unit.startsWith('min') ? value * 60
+          : value;
+      return TimerAction(reasoning: 'Timer (local)', durationSeconds: seconds, label: 'Timer');
+    }
+
+    // --- APP LAUNCH ---
+    final openMatch = RegExp(r'^ouvr[ei]s?\s+(.+)$').firstMatch(t);
+    if (openMatch != null) {
+      return AppLaunchAction(reasoning: 'App (local)', appName: openMatch.group(1)!.trim());
+    }
+
+    // Pas de match local → envoyer à Groq
+    return null;
   }
 
   /// Traite des données audio WAV (depuis BLE après conversion)

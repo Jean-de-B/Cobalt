@@ -392,8 +392,8 @@ void setup() {
     // === AFFICHAGE STATUT BATTERIE AU RÉVEIL (1.5s) ===
     showBatteryStatus();
 
-    // === LED ROUGE CLIGNOTANTE PENDANT RECHERCHE DE CONNEXION ===
-    ledController.set(LED_COLOR_RED, LED_MODE_BLINK_SLOW);
+    // === LED BLEUE CLIGNOTANTE PENDANT RECHERCHE DE CONNEXION ===
+    ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
 
     DEBUG_PRINTLN("[INIT] OK");
 
@@ -432,11 +432,15 @@ void loop() {
     // === BLE POST-CONNECT SETUP (machine à états non-bloquante) ===
     bleServices.update();
 
-    // === DÉTECTION CONNEXION → ÉTEINT LED ROUGE D'ADVERTISING ===
+    // === DÉTECTION CONNEXION/DÉCONNEXION → LED ===
     static bool wasConnected = false;
     bool isNowConnected = bleServices.isConnected();
     if (isNowConnected && !wasConnected && !recording && !transferring) {
+        // Vient de se connecter → LED éteinte (connecté = silencieux)
         ledController.off();
+    } else if (!isNowConnected && wasConnected && !recording && !transferring) {
+        // Vient de se déconnecter → LED bleue clignotante (recherche)
+        ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
     }
     wasConnected = isNowConnected;
 

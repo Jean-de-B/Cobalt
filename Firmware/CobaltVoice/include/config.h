@@ -121,11 +121,11 @@
 #define BLE_IDLE_CONN_INTERVAL_MIN  400   // 500ms (400 * 1.25ms)
 #define BLE_IDLE_CONN_INTERVAL_MAX  800   // 1000ms (800 * 1.25ms)
 
-// Mode rapide pour transfert (optim #5)
-#define BLE_FAST_CONN_INTERVAL_MIN  6     // 7.5ms (6 * 1.25ms) - minimum BLE spec
-#define BLE_FAST_CONN_INTERVAL_MAX  12    // 15ms (12 * 1.25ms)
+// Mode rapide pour transfert — Samsung refuse les intervalles < 12 (15ms)
+#define BLE_FAST_CONN_INTERVAL_MIN  24    // 30ms (24 * 1.25ms) - stable sur Samsung
+#define BLE_FAST_CONN_INTERVAL_MAX  40    // 50ms (40 * 1.25ms)
 
-// Supervision timeout & slave latency (évite status=8 LINK_SUPERVISION_TIMEOUT)
+// Supervision timeout & slave latency
 #define BLE_SUPERVISION_TIMEOUT     400   // 400 * 10ms = 4s
 #define BLE_SLAVE_LATENCY           0     // Répondre à chaque event
 #define BLE_CONN_SETUP_DELAY_MS     500   // Délai avant PHY/DLE après connexion
@@ -152,11 +152,7 @@
 
 // Timeout avant System OFF après inactivité
 // Condition: pas de BLE connecté, pas de bouton, pas de transfert
-#if DEBUG_SERIAL
-  #define SLEEP_TIMEOUT_MS      (60UL * 60UL * 1000UL)  // 1 heure (désactivé en debug)
-#else
-  #define SLEEP_TIMEOUT_MS      10000   // 10 secondes en production
-#endif
+#define SLEEP_TIMEOUT_MS      10000   // 10 secondes (identique debug/production)
 
 // Durée d'affichage du statut batterie au réveil
 #define BATTERY_LED_DURATION_MS 1500    // 1.5 secondes
