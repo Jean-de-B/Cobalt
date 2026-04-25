@@ -1,5 +1,7 @@
 # Cobalt
 
+website : https://cobalt-watch.com/ 
+
 **Bracelet vocal connecté qui transforme la voix en actions.**
 
 Cobalt est un wearable open-source composé d'un bracelet hardware (nRF52840) et d'une app Android (Flutter). Appuyez sur le bouton, parlez — Cobalt transcrit, comprend et exécute : envoyer un SMS, lancer un timer, contrôler Spotify, payer via PayPal, dicter du texte, ou simplement prendre une note.
