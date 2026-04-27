@@ -1,10 +1,12 @@
+[🇫🇷 Lire en français](README.fr.md)
+
 # Cobalt
 
-website : https://cobalt-watch.com/ 
+**Website:** https://cobalt-watch.com/
 
-**Bracelet vocal connecté qui transforme la voix en actions.**
+**Voice-connected bracelet that turns speech into actions.**
 
-Cobalt est un wearable open-source composé d'un bracelet hardware (nRF52840) et d'une app Android (Flutter). Appuyez sur le bouton, parlez — Cobalt transcrit, comprend et exécute : envoyer un SMS, lancer un timer, contrôler Spotify, payer via PayPal, dicter du texte, ou simplement prendre une note.
+Cobalt is an open-source wearable made of a hardware bracelet (nRF52840) and an Android app (Flutter). Press the button, speak — Cobalt transcribes, understands, and executes: send an SMS, set a timer, control Spotify, or simply take a note.
 
 <p align="center">
   <img src="App/cobalt_task/assets/logo.png" alt="Cobalt Logo" width="120"/>
@@ -12,76 +14,70 @@ Cobalt est un wearable open-source composé d'un bracelet hardware (nRF52840) et
 
 ---
 
-## Comment ça marche
+## How it works
 
 ```
 ┌─────────────────┐         BLE          ┌──────────────────────────────────────┐
-│  Bracelet Cobalt │ ──────────────────> │           App Android                │
+│  Cobalt Bracelet │ ──────────────────> │           Android App                │
 │                  │                      │                                      │
 │  nRF52840 Sense  │                      │  Audio ADPCM ──> WAV                │
-│  Micro PDM       │                      │       ↓                              │
-│  Flash QSPI      │                      │  Whisper STT (transcription)         │
-│  Bouton + LED    │                      │       ↓                              │
-│  Batterie LiPo   │                      │  Llama 3.1 (compréhension)           │
+│  PDM Microphone  │                      │       ↓                              │
+│  QSPI Flash      │                      │  Whisper STT (transcription)         │
+│  Button + LED    │                      │       ↓                              │
+│  LiPo Battery    │                      │  Llama 3.1 (understanding)           │
 │                  │                      │       ↓                              │
-│                  │                      │  Action locale OU Note catégorisée   │
+│                  │                      │  Local action OR Categorized note    │
 └─────────────────┘                      └──────────────────────────────────────┘
 ```
 
-**Deux modes d'entrée vocale :**
-- **Bouton du bracelet** (long press) — enregistre sur le bracelet, transfère via BLE
-- **Bouton Power du téléphone** (long press) — enregistre directement sur le micro du téléphone, fonctionne depuis n'importe quelle app
+**Two voice input modes:**
+- **Bracelet button** (long press) — records on the bracelet, transfers via BLE
+- **Phone power button** (long press) — records directly on the phone microphone, works from any app
 
 ---
 
-## Fonctionnalités
+## Features
 
-### Actions vocales (12 types)
+### Voice actions (12 types)
 
-| Commande | Action |
+| Command | Action |
 |---|---|
-| "Réveille-moi à 7h" | Alarme Android |
-| "Timer 5 minutes" | Timer système |
-| "SMS à maman : j'arrive" | SMS envoyé directement |
-| "Appelle Paul" | Appel téléphonique |
-| "Dis à Marie que c'est ok" | WhatsApp / Telegram / Signal (routage intelligent) |
-| "RDV dentiste vendredi 14h" | Événement calendrier |
-| "Emmène-moi gare de Lyon" | Navigation Google Maps |
-| "Joue du jazz sur Spotify" | Lecture Spotify |
-| "Rembourse 20€ à Paul" | Paiement PayPal |
-| "Son à fond" / "Allume la lampe" | Contrôle système (volume, lampe, mode silencieux) |
-| "Ouvre Instagram" | Lancement d'app (120+ apps reconnues) |
-| "Rappelle-moi d'acheter du pain" | Note catégorisée (TODO, SHOPPING, MEMO, EVENT, CONTACT) |
+| "Wake me up at 7am" | Android alarm |
+| "Timer 5 minutes" | System timer |
+| "Text mom: on my way" | SMS sent directly |
+| "Call Paul" | Phone call |
+| "Tell Marie it's ok" | WhatsApp / Telegram / Signal (smart routing) |
+| "Dentist appointment Friday 2pm" | Calendar event |
+| "Take me to Gare de Lyon" | Google Maps navigation |
+| "Play jazz on Spotify" | Spotify playback |
+| "Pay back Paul €20" | PayPal payment |
+| "Full volume" / "Turn on the light" | System control (volume, lamp, silent mode) |
+| "Open Instagram" | App launch (120+ recognized apps) |
+| "Remind me to buy bread" | Categorized note (TODO, SHOPPING, MEMO, EVENT, CONTACT) |
 
-### Mode dictée
+### Smart notes
 
-Quand un clavier est ouvert dans n'importe quelle app, le long press Power active le **mode dictée** : le texte est transcrit et injecté directement dans le champ de saisie, segment par segment, sans animation ni pipeline IA.
+Voice memos that don't match any action are automatically categorized and organized as cards:
+- **TODO** — tasks with optional deadline
+- **SHOPPING** — automatic item extraction
+- **EVENT** — appointments with date/location
+- **CONTACT** — name, phone, email, door code
+- **MEMO** — ideas, thoughts, with sentiment analysis
 
-### Notes intelligentes
+### Bracelet gestures
 
-Les mémos vocaux qui ne correspondent à aucune action sont automatiquement catégorisés et organisés en fiches :
-- **TODO** — tâches avec échéance optionnelle
-- **SHOPPING** — extraction automatique des articles
-- **EVENT** — rendez-vous avec date/lieu
-- **CONTACT** — nom, téléphone, email, digicode
-- **MEMO** — idées, réflexions, avec analyse de sentiment
-
-### Gestes bracelet
-
-| Geste | Action |
+| Gesture | Action |
 |---|---|
-| Long press | Enregistrement vocal (push-to-talk) |
-| Simple clic | Play / Pause média |
-| Double clic | Piste suivante |
-| Triple clic | Bookmark GPS |
+| Long press | Voice recording (push-to-talk) |
+| Single click | Play / Pause media |
+| Double click | Next track |
+| Triple click | GPS Bookmark |
 
-### Intégrations
+### Integrations
 
-- **Google** — Tasks, Calendar, Contacts, Docs (sync bidirectionnelle)
-- **Spotify** — OAuth2 PKCE, recherche et contrôle de lecture
-- **PayPal** — Paiements P2P via API REST
-- **Groq** — Whisper (STT) + Llama 3.1 (NLU), temp basse pour la fiabilité
-- **Gemini** — Briefing de navigation en 3 phrases
+- **Google** — Tasks, Calendar, Contacts, Docs (two-way sync)
+- **Spotify** — OAuth2 PKCE, search and playback control
+- **Groq** — Whisper (STT) + Llama 3.1 (NLU), low temperature for reliability
 
 ---
 
@@ -89,96 +85,94 @@ Les mémos vocaux qui ne correspondent à aucune action sont automatiquement cat
 
 ```
 Cobalt/
-├── Firmware/CobaltVoice-PIO/     # Firmware PlatformIO (C++)
+├── Firmware/CobaltVoice-PIO/     # PlatformIO firmware (C++)
 │   ├── include/                   # Headers (config, BLE, audio, LED, power, NFC)
-│   └── src/                       # Sources (main loop, ADPCM, PDM, flash, bouton)
+│   └── src/                       # Sources (main loop, ADPCM, PDM, flash, button)
 │
-├── App/cobalt_task/               # App Flutter principale
+├── App/cobalt_task/               # Main Flutter app
 │   ├── lib/
 │   │   ├── models/                # VoiceNote, Fiche, AiAction (sealed class)
-│   │   ├── services/              # 40+ services singleton
+│   │   ├── services/              # 40+ singleton services
 │   │   ├── screens/               # HomeScreen
 │   │   └── widgets/               # MemoCard, BleStatusIndicator
-│   └── android/.../kotlin/        # Code natif Android (Kotlin)
-│       ├── AssistantActivity.kt   # Intercepte ASSIST (Power long press)
-│       ├── CobaltOverlayManager.kt # Overlay vocal (EdgeGlow + VoiceRing)
-│       ├── CobaltAccessibilityService.kt # Détection clavier + injection texte
-│       └── MainActivity.kt        # 14 MethodChannels Flutter ↔ Android
+│   └── android/.../kotlin/        # Native Android code (Kotlin)
+│       ├── AssistantActivity.kt   # Intercepts ASSIST (Power long press)
+│       ├── CobaltOverlayManager.kt # Voice overlay (EdgeGlow + VoiceRing)
+│       ├── CobaltAccessibilityService.kt # Keyboard detection + text injection
+│       └── MainActivity.kt        # 14 Flutter ↔ Android MethodChannels
 │
-└── App/cobalt_memo/               # App notes vocales (version initiale)
+└── App/cobalt_memo/               # Voice notes app (initial version)
 ```
 
-### Pipeline vocal
+### Voice pipeline
 
 ```
 Audio (ADPCM/WAV)
-  → Whisper STT (Groq cloud ou Sherpa local)
-  → Llama 3.1 : extraction d'intent + paramètres (JSON)
-  → Si action détectée :
-      → LocalActionDispatcher → Service natif Android → Exécution
-      → Confirmation TTS
-  → Si aucune action :
-      → Llama 3.1 : catégorisation (TODO/SHOPPING/EVENT/CONTACT/MEMO)
-      → Fusion avec fiches existantes (matching flou de titres)
-      → Stockage SQLite + sync Google
+  → Whisper STT (Groq cloud or Sherpa local)
+  → Llama 3.1: intent extraction + parameters (JSON)
+  → If action detected:
+      → LocalActionDispatcher → Native Android service → Execution
+      → TTS confirmation
+  → If no action:
+      → Llama 3.1: categorization (TODO/SHOPPING/EVENT/CONTACT/MEMO)
+      → Merge with existing cards (fuzzy title matching)
+      → SQLite storage + Google sync
 ```
 
 ---
 
 ## Hardware
 
-| Composant | Détail |
+| Component | Details |
 |---|---|
 | MCU | Seeed XIAO nRF52840 Sense (Cortex-M4F, 64 MHz) |
-| Micro | MSM261D3526H1CPM (PDM, 16 kHz mono) |
+| Microphone | MSM261D3526H1CPM (PDM, 16 kHz mono) |
 | Flash | P25Q16H 2 MB (QSPI, LittleFS) |
 | BLE | 5.0, 2 Mbps PHY, MTU 247, NUS service |
-| Batterie | LiPo 3.5-4.2V, charge USB |
-| LED | RGB onboard (rouge=rec, bleu=transfert, vert=charge) |
-| Bouton | Push-to-talk sur D1 (debounce 50ms, multi-press 300ms) |
-| NFC | Emulation Type 2 Tag (test antenne) |
+| Battery | LiPo 3.5-4.2V, USB charging |
+| LED | Onboard RGB (red=rec, blue=transfer, green=charge) |
+| Button | Push-to-talk on D1 (50ms debounce, 300ms multi-press) |
+| NFC | Type 2 Tag emulation (antenna test) |
 
-**Consommation :** ~20-50 mA actif, ~0.4 µA en System OFF. Auto-off après 10s d'inactivité.
+**Power consumption:** ~20-50 mA active, ~0.4 µA in System OFF. Auto-off after 10s of inactivity.
 
-**Format audio CVOX :** Header 34 octets + données IMA ADPCM (compression 4:1).
+**CVOX audio format:** 34-byte header + IMA ADPCM data (4:1 compression).
 
 ---
 
 ## Setup
 
-### Prérequis
+### Requirements
 
 - Flutter 3.10.8+
 - Android SDK 31+ (Android 12)
-- PlatformIO (pour le firmware)
-- Un Seeed XIAO nRF52840 Sense (pour le bracelet)
+- PlatformIO (for firmware)
+- A Seeed XIAO nRF52840 Sense (for the bracelet)
 
 ### Configuration
 
-1. Cloner le repo :
+1. Clone the repo:
 ```bash
 git clone https://github.com/votre-user/Cobalt.git
 cd Cobalt/App/cobalt_task
 ```
 
-2. Créer le fichier `.env` à la racine de `cobalt_task/` :
+2. Create the `.env` file at the root of `cobalt_task/`:
 ```env
 GROQ_API_KEY=your_groq_api_key
 GOOGLE_MAPS_API_KEY=your_google_maps_key
-GEMINI_API_KEY=your_gemini_key
 ```
 
-3. Installer les dépendances et lancer :
+3. Install dependencies and run:
 ```bash
 flutter pub get
 flutter run
 ```
 
-4. Dans l'app, activer les permissions et services :
-   - **Assistant par défaut** — Paramètres > Apps par défaut > Assistant numérique > Cobalt
-   - **Touche latérale** (Samsung) — Paramètres > Fonctions avancées > Touche latérale > Maintien > Assistant
-   - **Service d'accessibilité** — Paramètres > Accessibilité > Cobalt Dictation (pour le mode dictée)
-   - **Overlay** — Permission de superposition d'apps
+4. In the app, enable permissions and services:
+   - **Default assistant** — Settings > Default apps > Digital assistant > Cobalt
+   - **Side key** (Samsung) — Settings > Advanced features > Side key > Press and hold > Assistant
+   - **Overlay** — App overlay permission
 
 ### Firmware
 
@@ -189,20 +183,20 @@ pio run -t upload
 
 ---
 
-## Stack technique
+## Tech stack
 
-| Couche | Technologies |
+| Layer | Technologies |
 |---|---|
 | Firmware | C++ / Arduino (Adafruit nRF52 BSP), PlatformIO |
-| App | Flutter / Dart, Kotlin (code natif Android) |
-| IA | Groq (Whisper large-v3 + Llama 3.1 8B), Sherpa-ONNX (offline), Gemini Flash |
+| App | Flutter / Dart, Kotlin (native Android code) |
+| AI | Groq (Whisper large-v3 + Llama 3.1 8B), Sherpa-ONNX (offline) |
 | BLE | flutter_blue_plus, Nordic UART Service (NUS) |
-| Base de données | SQLite (sqflite), 5 tables, version 8 |
-| Auth | Google Sign-In, Spotify OAuth2 PKCE, PayPal OAuth2 |
-| Services natifs | 14 MethodChannels, AccessibilityService, VoiceInteractionService, NotificationListener |
+| Database | SQLite (sqflite), 5 tables, version 8 |
+| Auth | Google Sign-In, Spotify OAuth2 PKCE |
+| Native services | 14 MethodChannels, AccessibilityService, VoiceInteractionService, NotificationListener |
 
 ---
 
-## Licence
+## License
 
-Projet personnel — licence à définir.
+Personal project — license to be defined.
