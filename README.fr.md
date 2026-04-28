@@ -151,7 +151,7 @@ Audio (ADPCM/WAV)
 
 1. Cloner le repo :
 ```bash
-git clone https://github.com/votre-user/Cobalt.git
+git clone https://github.com/Jean-de-B/Cobalt.git
 cd Cobalt/App/cobalt_task
 ```
 

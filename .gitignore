@@ -10,6 +10,12 @@
 .env
 *.env
 
+# ---------- Internal docs ----------
+COBALT_TECHNICAL_CONTEXT.md
+
+# ---------- Firmware binaries ----------
+Firmware/**/*.zip
+
 # ---------- IDE ----------
 .idea/
 .vscode/
