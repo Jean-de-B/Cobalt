@@ -41,6 +41,11 @@ class BleConstants {
   static const String fwVersionCharacteristicUuid =
       '6e400005-b5a3-f393-e0a9-e50e24dcca9e';
 
+  /// UUID de la caractéristique Debug Log (Notify: firmware → téléphone)
+  /// Logs debug firmware en temps réel via BLE
+  static const String debugLogCharacteristicUuid =
+      '6e400006-b5a3-f393-e0a9-e50e24dcca9e';
+
   /// Commande pour entrer en mode DFU OTA
   static const int cmdEnterDfu = 0xFD;
 
@@ -197,10 +202,13 @@ enum BleConnectionState {
   /// Bluetooth désactivé ou non disponible
   disabled,
 
-  /// Déconnecté, en attente de scan
+  /// Aucune montre appairée
   disconnected,
 
-  /// Scan en cours
+  /// Montre appairée, en veille — scan passif actif, prêt à reconnecter
+  pairedIdle,
+
+  /// Scan en cours (appairage initial ou browse)
   scanning,
 
   /// Connexion en cours

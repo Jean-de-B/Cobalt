@@ -120,6 +120,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           _buildToggle(
+            icon: Icons.headset_mic,
+            label: 'Assistant casque / écouteurs',
+            subtitle: 'Répondre au bouton assistant des casques Bluetooth tiers',
+            value: _settings.headsetAssistant,
+            onChanged: (v) => setState(() => _settings.headsetAssistant = v),
+          ),
+
+          _buildToggle(
             icon: Icons.record_voice_over,
             label: 'Retour vocal (TTS)',
             subtitle: 'L\'assistant parle après chaque action',
@@ -136,11 +144,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           _buildToggle(
-            icon: Icons.watch,
-            label: 'Auto-connexion bracelet',
-            subtitle: 'Se connecte au bracelet Cobalt au démarrage',
-            value: _settings.autoConnectBracelet,
-            onChanged: (v) => setState(() => _settings.autoConnectBracelet = v),
+            icon: Icons.terminal,
+            label: 'Console debug',
+            subtitle: 'Affiche les logs en temps réel dans l\'app',
+            value: _settings.debugConsole,
+            onChanged: (v) => setState(() => _settings.debugConsole = v),
           ),
 
           const SizedBox(height: 24),

@@ -90,7 +90,7 @@ class CobaltOverlayService {
       if (success) {
         await _foregroundService.updateNotification(
           title: 'Cobalt Task',
-          text: '\u{1F534} Enregistrement en cours...',
+          text: 'Parlez, puis appuyez sur le bouton',
           isRecording: true,
         );
         _startAmplitudePolling();

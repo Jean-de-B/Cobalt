@@ -156,10 +156,20 @@ class SettingsService {
   }
 
   // ---------------------------------------------------------------------------
+  // SYSTÈME — Assistant casque / écouteurs Bluetooth
+  // ---------------------------------------------------------------------------
+
+  bool get headsetAssistant => _prefs?.getBool('headset_assistant') ?? false;
+  set headsetAssistant(bool v) {
+    _prefs?.setBool('headset_assistant', v);
+    _notify();
+  }
+
+  // ---------------------------------------------------------------------------
   // SYSTÈME — Notification persistante
   // ---------------------------------------------------------------------------
 
-  bool get persistentNotification => _prefs?.getBool('persistent_notification') ?? true;
+  bool get persistentNotification => _prefs?.getBool('persistent_notification') ?? false;
   set persistentNotification(bool v) {
     _prefs?.setBool('persistent_notification', v);
     _notify();
@@ -186,12 +196,12 @@ class SettingsService {
   }
 
   // ---------------------------------------------------------------------------
-  // SYSTÈME — Auto-connect bracelet au démarrage
+  // DEBUG — Console intégrée
   // ---------------------------------------------------------------------------
 
-  bool get autoConnectBracelet => _prefs?.getBool('auto_connect_bracelet') ?? true;
-  set autoConnectBracelet(bool v) {
-    _prefs?.setBool('auto_connect_bracelet', v);
+  bool get debugConsole => _prefs?.getBool('debug_console') ?? false;
+  set debugConsole(bool v) {
+    _prefs?.setBool('debug_console', v);
     _notify();
   }
 }

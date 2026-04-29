@@ -44,6 +44,11 @@ public:
     void stopAdvertising();
 
     /**
+     * @brief Démarre l'advertising en mode pairing (long, visible)
+     */
+    void startPairingAdvertising();
+
+    /**
      * @brief Vérifie si connecté
      */
     bool isConnected();
@@ -52,6 +57,11 @@ public:
      * @brief Vérifie si l'advertising est actif
      */
     bool isAdvertising() { return _advertising; }
+
+    /**
+     * @brief Vérifie si le phone a souscrit aux notifications TX (prêt pour transfert)
+     */
+    bool isNotifyEnabled();
 
     /**
      * @brief Obtient le handle de connexion
@@ -150,6 +160,23 @@ public:
     void disconnect();
 
     /**
+     * @brief Déconnecte et empêche le restart advertising (pour System OFF)
+     */
+    void disconnectAndStop();
+
+    /**
+     * @brief Attend que tous les paquets BLE en queue soient réellement transmis
+     * Bloque jusqu'à ce que le SoftDevice confirme via HVN_TX_COMPLETE
+     * @return true si flush réussi, false si timeout ou déconnexion
+     */
+    bool waitForTxFlush();
+
+    /**
+     * @brief Accès à la caractéristique debug log (pour debug_ble)
+     */
+    BLECharacteristic* getDebugLogChar() { return &_debugLogChar; }
+
+    /**
      * @brief Désactive le BLE (pour économie d'énergie)
      */
     void disable();
@@ -210,6 +237,7 @@ private:
     BLECharacteristic _audioRxChar;        // RX (Write) - commandes
     BLECharacteristic _buttonEventChar;    // Button Event (Notify)
     BLECharacteristic _fwVersionChar;      // Firmware Version (Read + Notify)
+    BLECharacteristic _debugLogChar;       // Debug Log (Notify)
 
     // État connexion
     uint16_t _connHandle;
@@ -217,8 +245,16 @@ private:
     uint16_t _mtuSize;
     bool _advertising;
 
+    // HVN queue size (doit correspondre au hvn_qsize dans configPrphConn)
+    static const uint8_t HVN_QUEUE_SIZE = 30;
+
     // Advertising multi-phase
     bool _fastAdvDone;
+
+    // Backoff exponentiel pour advertising
+    uint8_t _advFailureCount;           // Nombre d'échecs consécutifs
+    uint32_t _lastAdvFailureTime;       // Dernier échec (millis)
+    uint32_t _advBackoffFactor;         // Facteur de backoff (1, 2, 4, 8... max 8)
 
     // État transfert
     bool _transferring;
@@ -241,6 +277,12 @@ private:
     CommandReceivedCallback _commandCallback;
     AdvertisingStoppedCallback _advStoppedCallback;
 
+    // Async flush state (replaces blocking waitForTxFlush() in continueTransfer())
+    bool _flushActive;
+    uint32_t _flushStartTime;
+    uint8_t _flushSlotsAcquired;
+    TransferCompleteCallback _pendingFlushCallback;
+
     /**
      * @brief Configure les services BLE
      */
@@ -260,6 +302,23 @@ private:
      * @brief Négocie le MTU optimal
      */
     void negotiateMtu();
+
+    /**
+     * @brief Polls async flush progress (non-blocking replacement for waitForTxFlush)
+     */
+    void updateFlush();
+
+    /**
+     * @brief Réinitialise le backoff exponentiel de l'advertising après une connexion réussie
+     */
+    void _resetAdvBackoff();
+
+    /**
+     * @brief Calcule le timeout d'advertising avec backoff exponentiel
+     * @param baseTimeout Timeout de base en secondes
+     * @return Timeout avec backoff appliqué (capped à 8×)
+     */
+    uint16_t _applyAdvBackoff(uint16_t baseTimeout);
 };
 
 // Instance globale

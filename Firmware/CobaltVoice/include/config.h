@@ -126,36 +126,41 @@
 #define BLE_FAST_CONN_INTERVAL_MAX  40    // 50ms (40 * 1.25ms)
 
 // Supervision timeout & slave latency
-#define BLE_SUPERVISION_TIMEOUT     400   // 400 * 10ms = 4s
-#define BLE_SLAVE_LATENCY           0     // Répondre à chaque event
+#define BLE_SUPERVISION_TIMEOUT     1200  // 1200 * 10ms = 12s (marge pour slave_latency=4)
+#define BLE_SLAVE_LATENCY           4     // Skip jusqu'à 4 events en mode idle (économie d'énergie)
 #define BLE_CONN_SETUP_DELAY_MS     500   // Délai avant PHY/DLE après connexion
 
 // =============================================================================
-// ADVERTISING CONFIGURATION (optim #3 - multi-phase)
+// ADVERTISING CONFIGURATION (mode agressif : wake → record → send → sleep)
 // =============================================================================
 
-// Phase 1: Fast advertising (après boot/disconnect)
+// Phase unique: fast advertising court pendant l'enregistrement/transfert
 #define ADV_FAST_INTERVAL_MIN   32      // 20ms (en unités de 0.625ms)
 #define ADV_FAST_INTERVAL_MAX   48      // 30ms
-#define ADV_FAST_TIMEOUT_S      60      // 60 secondes en mode rapide (aligne avec reconnexion app)
+#define ADV_FAST_TIMEOUT_S      15      // 15 secondes — assez pour que l'app se connecte
 
-// Phase 2: Slow advertising (économie)
+// Phase 2: slow advertising bref si le phone n'a pas accroché en fast
 #define ADV_SLOW_INTERVAL_MIN   1600    // 1000ms (en unités de 0.625ms)
 #define ADV_SLOW_INTERVAL_MAX   2400    // 1500ms
-#define ADV_SLOW_TIMEOUT_S      120     // 2 minutes en mode lent
+#define ADV_SLOW_TIMEOUT_S      15      // 15 secondes en lent, puis System OFF
 
-// Après les deux phases: advertising stoppé → System OFF
+// Total: 30 secondes d'advertising max avant System OFF
+
+// Mode pairing (triple-tap PTT) : advertising long pour première connexion
+#define ADV_PAIRING_INTERVAL_MIN  160   // 100ms (en unités de 0.625ms)
+#define ADV_PAIRING_INTERVAL_MAX  240   // 150ms
+#define ADV_PAIRING_TIMEOUT_S     180   // 3 minutes en mode pairing
 
 // =============================================================================
-// POWER MANAGEMENT
+// POWER MANAGEMENT (mode agressif)
 // =============================================================================
 
 // Timeout avant System OFF après inactivité
 // Condition: pas de BLE connecté, pas de bouton, pas de transfert
-#define SLEEP_TIMEOUT_MS      10000   // 10 secondes (identique debug/production)
+#define SLEEP_TIMEOUT_MS        5000    // 5 secondes → System OFF
 
-// Durée d'affichage du statut batterie au réveil
-#define BATTERY_LED_DURATION_MS 1500    // 1.5 secondes
+// Durée d'affichage du statut batterie (utilisé si showBatteryStatus() appelé)
+#define BATTERY_LED_DURATION_MS 300
 
 // =============================================================================
 // FEATURE FLAGS (low power)
@@ -176,17 +181,21 @@
 // DEBUG
 // =============================================================================
 
-#define DEBUG_SERIAL            1       // 1 = debug (UART activé)
+#define DEBUG_SERIAL            1       // 1 = UART Serial en plus du BLE
 #define DEBUG_BAUD_RATE         115200
 
+// Les logs debug passent TOUJOURS par le buffer BLE (debug_ble)
+// Si DEBUG_SERIAL=1, ils passent aussi par le Serial USB (dev câblé)
+#include "debug_ble.h"
+
 #if DEBUG_SERIAL
-  #define DEBUG_PRINT(x)        Serial.print(x)
-  #define DEBUG_PRINTLN(x)      Serial.println(x)
-  #define DEBUG_PRINTF(...)     Serial.printf(__VA_ARGS__)
+  #define DEBUG_PRINT(x)        do { Serial.print(x); debugBle.log(String(x).c_str()); } while(0)
+  #define DEBUG_PRINTLN(x)      do { Serial.println(x); debugBle.log(String(x).c_str()); debugBle.log("\n"); } while(0)
+  #define DEBUG_PRINTF(...)     do { Serial.printf(__VA_ARGS__); debugBle.logf(__VA_ARGS__); } while(0)
 #else
-  #define DEBUG_PRINT(x)
-  #define DEBUG_PRINTLN(x)
-  #define DEBUG_PRINTF(...)
+  #define DEBUG_PRINT(x)        debugBle.log(String(x).c_str())
+  #define DEBUG_PRINTLN(x)      do { debugBle.log(String(x).c_str()); debugBle.log("\n"); } while(0)
+  #define DEBUG_PRINTF(...)     debugBle.logf(__VA_ARGS__)
 #endif
 
 // =============================================================================

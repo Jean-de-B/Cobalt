@@ -190,9 +190,14 @@ class AudioService {
       await _foregroundService.initialize();
       // ignore: avoid_print
       print('AUDIO: Foreground service initialisé');
-      await _foregroundService.start();
-      // ignore: avoid_print
-      print('AUDIO: Foreground service démarré au lancement');
+      if (SettingsService().persistentNotification) {
+        await _foregroundService.start();
+        // ignore: avoid_print
+        print('AUDIO: Foreground service démarré (notification persistante activée)');
+      } else {
+        // ignore: avoid_print
+        print('AUDIO: Notification persistante désactivée (skip foreground)');
+      }
     } catch (e) {
       // ignore: avoid_print
       print('AUDIO: Erreur foreground service: $e');
@@ -515,10 +520,15 @@ class AudioService {
       // -----------------------------------------------------------------------
       if (_isTranscriptionMeaningless(result.text)) {
         // ignore: avoid_print
-        print('TRANSCRIPTION: 🔇 Texte vide ou hallucination détectée — note supprimée');
-        await _databaseService.deleteNote(note.id!);
-        final audioFile = File(note.audioPath);
-        if (await audioFile.exists()) await audioFile.delete();
+        print('TRANSCRIPTION: Texte vide ou hallucination → fiche grisée');
+        final rejectedNote = note.copyWith(
+          text: result.text,
+          summary: 'Transcription non exploitable',
+          isTranscribing: false,
+          isAnalyzing: false,
+          errorMessage: 'hallucination',
+        );
+        await _databaseService.updateNote(rejectedNote);
         return;
       }
       // -----------------------------------------------------------------------
@@ -1359,12 +1369,18 @@ class AudioService {
       final file = File(filePath);
       final wavData = await file.readAsBytes();
 
-      // Éliminer les enregistrements silencieux avant STT
+      // Enregistrement silencieux → garder la fiche en grisé
       if (_isWavSilent(wavData)) {
-        await _databaseService.deleteNote(note.id!);
-        await file.delete();
+        final silentNote = note.copyWith(
+          text: '',
+          summary: 'Enregistrement silencieux',
+          isTranscribing: false,
+          isAnalyzing: false,
+          errorMessage: 'silence',
+        );
+        await _databaseService.updateNote(silentNote);
         // ignore: avoid_print
-        print('RECORD: Enregistrement silencieux supprimé');
+        print('RECORD: Enregistrement silencieux (fiche grisée)');
         return;
       }
 
@@ -1507,14 +1523,17 @@ class AudioService {
   /// État actuel de la connexion BLE
   BleConnectionState get bleConnectionState => _bleService.connectionState;
 
+  /// Accès au service BLE (pour l'écran debug)
+  BleService get bleServiceInstance => _bleService;
+
   /// Nom de l'appareil BLE connecté (ex: "Cobalt A3F2")
   String? get connectedDeviceName => _bleService.connectedDeviceName;
 
+  /// MAC address de la montre appairée
+  String? get selectedDeviceId => _bleService.selectedDeviceId;
+
   /// Version firmware de l'appareil connecté (ex: "1.0.0")
   String? get firmwareVersion => _bleService.firmwareVersion;
-
-  /// Accès au BleService pour le DFU
-  BleService get bleServiceInstance => _bleService;
 
   /// Stream des appareils découverts (pour le device picker)
   Stream<List<ScanResult>> get discoveredDevicesStream =>

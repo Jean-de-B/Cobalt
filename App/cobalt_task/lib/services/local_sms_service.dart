@@ -60,6 +60,10 @@ class LocalSmsService {
   /// Mode d'envoi: true = direct (arrière-plan), false = via app SMS
   bool _directMode = true;
 
+  /// Anti-doublon : hash du dernier SMS envoyé + timestamp
+  String? _lastSmsHash;
+  DateTime? _lastSmsTime;
+
   /// Active/désactive le mode direct
   bool get directMode => _directMode;
   set directMode(bool value) => _directMode = value;
@@ -87,6 +91,17 @@ class LocalSmsService {
     }
 
     try {
+      // Anti-doublon : ignorer si même destinataire+message dans les 10 dernières secondes
+      final hash = '$recipient|$message';
+      if (_lastSmsHash == hash && _lastSmsTime != null &&
+          DateTime.now().difference(_lastSmsTime!).inSeconds < 10) {
+        // ignore: avoid_print
+        print('[SMS] Doublon détecté (${DateTime.now().difference(_lastSmsTime!).inSeconds}s) → ignoré');
+        return SmsResult.success(contact: recipient, phone: '', direct: true);
+      }
+      _lastSmsHash = hash;
+      _lastSmsTime = DateTime.now();
+
       // Résoudre le numéro de téléphone
       final (phoneNumber, resolvedName) = await _resolvePhoneNumber(recipient);
 
@@ -103,14 +118,14 @@ class LocalSmsService {
         // Mode direct: envoi via SmsManager natif
         final result = await _sendSmsDirect(phoneNumber, message);
 
+        // Le timeout Android (10s) retourne true si le broadcast ne revient pas
+        // → le SMS est considéré envoyé. Pas de retry pour éviter les doublons.
         if (result) {
-          // Enregistrer dans l'historique
           await _contactHistory.recordContact(
             contactName: resolvedName ?? recipient,
             phoneNumber: phoneNumber,
             app: 'sms',
           );
-
           // ignore: avoid_print
           print('[SMS] Envoyé directement à: ${resolvedName ?? phoneNumber}');
           return SmsResult.success(
@@ -119,10 +134,10 @@ class LocalSmsService {
             direct: true,
           );
         } else {
-          // Fallback sur mode UI si échec du mode direct
+          // Échec confirmé par l'OS (pas un timeout) — ne pas retenter
           // ignore: avoid_print
-          print('[SMS] Échec mode direct, fallback sur app SMS');
-          return await _sendSmsViaApp(phoneNumber, message, resolvedName, recipient);
+          print('[SMS] Échec confirmé par l\'OS (pas de retry)');
+          return SmsResult.failure('Échec envoi SMS à ${resolvedName ?? phoneNumber}');
         }
       } else {
         // Mode UI: ouvrir l'app SMS

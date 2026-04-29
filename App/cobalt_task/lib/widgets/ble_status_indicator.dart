@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../constants/app_constants.dart';
 import '../services/audio_service.dart';
 import '../services/dfu_service.dart';
+import '../screens/debug_screen.dart';
 
 /// =============================================================================
 /// ble_status_indicator.dart
@@ -45,44 +46,35 @@ class BleStatusIndicator extends StatelessWidget {
   }
 
   Widget _buildIndicator(BuildContext context, BleConnectionState state) {
-    // Déterminer la couleur et l'icône selon l'état
-    final (color, icon, tooltip) = switch (state) {
-      BleConnectionState.disabled => (
-          AppColors.bleDisconnected,
-          Icons.watch_off,
-          'Bluetooth désactivé',
-        ),
-      BleConnectionState.disconnected => (
-          AppColors.bleDisconnected,
-          Icons.watch,
-          'Montre déconnectée - Appuyez pour scanner',
-        ),
-      BleConnectionState.scanning => (
-          AppColors.bleConnecting,
-          Icons.watch,
-          'Recherche de la montre...',
-        ),
-      BleConnectionState.connecting => (
-          AppColors.bleConnecting,
-          Icons.watch,
-          'Connexion en cours...',
-        ),
-      BleConnectionState.connected => (
-          AppColors.bleConnected,
-          Icons.watch,
-          'Connecté à ${audioService.connectedDeviceName ?? "Cobalt"}',
-        ),
-      BleConnectionState.syncing => (
-          AppColors.bleSyncing,
-          Icons.sync,
-          'Réception de données...',
-        ),
-      BleConnectionState.error => (
-          Colors.red,
-          Icons.watch_off,
-          'Erreur de connexion',
-        ),
-    };
+    final isPaired = audioService.selectedDeviceId != null;
+    final deviceName = audioService.connectedDeviceName ?? 'Cobalt';
+
+    // Couleur basée sur le pairing, pas seulement la connexion BLE
+    final Color color;
+    final IconData icon;
+    final String tooltip;
+
+    if (!isPaired) {
+      // Pas de montre appairée → gris
+      color = AppColors.bleDisconnected;
+      icon = Icons.watch;
+      tooltip = 'Aucune montre — Appuyez pour scanner';
+    } else if (state == BleConnectionState.connected || state == BleConnectionState.syncing) {
+      // Communication active → bleu
+      color = AppColors.bleSyncing;
+      icon = state == BleConnectionState.syncing ? Icons.sync : Icons.watch;
+      tooltip = 'Connecté à $deviceName';
+    } else if (state == BleConnectionState.scanning || state == BleConnectionState.connecting) {
+      // Recherche → orange
+      color = AppColors.bleConnecting;
+      icon = Icons.watch;
+      tooltip = 'Recherche de $deviceName...';
+    } else {
+      // Appairé mais pas connecté (veille, éteint, hors portée) → vert
+      color = AppColors.bleConnected;
+      icon = Icons.watch;
+      tooltip = 'Appairé — $deviceName';
+    }
 
     // Animation pour les états de transition
     final isAnimated = state == BleConnectionState.scanning ||
@@ -105,18 +97,17 @@ class BleStatusIndicator extends StatelessWidget {
   }
 
   void _handleTap(BuildContext context, BleConnectionState state) {
-    switch (state) {
-      case BleConnectionState.connected:
-        _showConnectionMenu(context);
-        break;
-      default:
-        // Toujours ouvrir le picker (scan, connecting, disconnected, disabled, error)
-        if (onScanRequested != null) {
-          onScanRequested!();
-        } else {
-          audioService.startBleScan();
-        }
-        break;
+    final isPaired = audioService.selectedDeviceId != null;
+    if (isPaired) {
+      // Montre appairée → toujours afficher la fiche montre
+      _showConnectionMenu(context);
+    } else {
+      // Pas de montre → ouvrir le scanner
+      if (onScanRequested != null) {
+        onScanRequested!();
+      } else {
+        audioService.startBleScan();
+      }
     }
   }
 
@@ -188,15 +179,63 @@ class BleStatusIndicator extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  // Déconnecter
+                  const SizedBox(width: 8),
+                  // Debug logs
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      audioService.stopBrowseScan();
+                      Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => DebugScreen(bleService: audioService.bleServiceInstance),
+                      ));
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bug_report, size: 14, color: Colors.orange),
+                          SizedBox(width: 4),
+                          Text('Debug', style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orange,
+                          )),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Oublier la montre (supprime l'appairage)
                   GestureDetector(
                     onTap: () {
                       Navigator.pop(sheetContext);
                       audioService.stopBrowseScan();
                       audioService.disconnectBle();
                     },
-                    child: const Icon(Icons.logout, color: Colors.red, size: 18),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.link_off, size: 14, color: Colors.red),
+                          SizedBox(width: 4),
+                          Text('Oublier', style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.red,
+                          )),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),

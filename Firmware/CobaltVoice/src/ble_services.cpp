@@ -44,6 +44,12 @@ static const uint8_t FW_VERSION_UUID[] = {
     0x93, 0xF3, 0xA3, 0xB5, 0x05, 0x00, 0x40, 0x6E
 };
 
+// Debug Log characteristic UUID: 6E400006-B5A3-F393-E0A9-E50E24DCCA9E
+static const uint8_t DEBUG_LOG_UUID[] = {
+    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
+    0x93, 0xF3, 0xA3, 0xB5, 0x06, 0x00, 0x40, 0x6E
+};
+
 // Callbacks Bluefruit
 void ble_connect_callback(uint16_t connHandle) {
     if (_bleInstance) _bleInstance->_onConnect(connHandle);
@@ -76,6 +82,17 @@ bool BleServices::beginAfterBluefruit() {
     _advertising = false;
     _fastAdvDone = false;
     _connMode = CONN_MODE_FAST;
+
+    // Backoff exponentiel advertising
+    _advFailureCount = 0;
+    _lastAdvFailureTime = 0;
+    _advBackoffFactor = 1;
+
+    // Async flush state
+    _flushActive = false;
+    _flushStartTime = 0;
+    _flushSlotsAcquired = 0;
+    _pendingFlushCallback = nullptr;
 
     // Transfert avec header
     _headerData = nullptr;
@@ -157,6 +174,13 @@ void BleServices::setupServices() {
     _fwVersionChar.write(version, 3);
     _fwVersionChar.begin();
 
+    // Caractéristique Debug Log (Notify) — logs firmware en temps réel
+    _debugLogChar = BLECharacteristic(DEBUG_LOG_UUID);
+    _debugLogChar.setProperties(CHR_PROPS_NOTIFY);
+    _debugLogChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+    _debugLogChar.setMaxLen(BLE_MTU_SIZE - 3);
+    _debugLogChar.begin();
+
     DEBUG_PRINTLN("[BLE] Services configured");
 }
 
@@ -185,28 +209,46 @@ void BleServices::setupAdvertising() {
 void BleServices::startAdvertising() {
     _fastAdvDone = false;
 
+    // Appliquer le backoff exponentiel au timeout de la phase rapide
+    uint16_t fastTimeout = _applyAdvBackoff(ADV_FAST_TIMEOUT_S);
+
     // Phase rapide: intervalle 20-30ms
     Bluefruit.Advertising.setInterval(ADV_FAST_INTERVAL_MIN, ADV_FAST_INTERVAL_MAX);
-    Bluefruit.Advertising.setFastTimeout(ADV_FAST_TIMEOUT_S);
+    Bluefruit.Advertising.setFastTimeout(fastTimeout);
 
     // Démarre avec timeout = fast + slow phases (total en secondes)
     // 0 = permanent, mais on veut stopper après les phases
     // On utilise le callback pour gérer la transition
-    Bluefruit.Advertising.start(ADV_FAST_TIMEOUT_S);
+    Bluefruit.Advertising.start(fastTimeout);
     _advertising = true;
 
-    DEBUG_PRINTLN("[BLE] Advertising started (fast phase)");
+    DEBUG_PRINTF("[BLE] Advertising started (fast phase, timeout=%us)\n", fastTimeout);
+}
+
+void BleServices::startPairingAdvertising() {
+    // Mode pairing : advertising long (3 min) à intervalle moyen
+    Bluefruit.Advertising.setInterval(ADV_PAIRING_INTERVAL_MIN, ADV_PAIRING_INTERVAL_MAX);
+    Bluefruit.Advertising.setFastTimeout(0);
+
+    Bluefruit.Advertising.start(ADV_PAIRING_TIMEOUT_S);
+    _advertising = true;
+    _fastAdvDone = true;  // Pas de phase fast/slow, juste pairing
+
+    DEBUG_PRINTLN("[BLE] Pairing advertising started (3 min)");
 }
 
 void BleServices::startSlowAdvertising() {
-    // Phase lente: intervalle 1000-1500ms pendant 2 minutes
+    // Appliquer le backoff exponentiel au timeout de la phase lente
+    uint16_t slowTimeout = _applyAdvBackoff(ADV_SLOW_TIMEOUT_S);
+
+    // Phase lente: intervalle 1000-1500ms
     Bluefruit.Advertising.setInterval(ADV_SLOW_INTERVAL_MIN, ADV_SLOW_INTERVAL_MAX);
     Bluefruit.Advertising.setFastTimeout(0);  // Pas de phase rapide
 
-    Bluefruit.Advertising.start(ADV_SLOW_TIMEOUT_S);
+    Bluefruit.Advertising.start(slowTimeout);
     _advertising = true;
 
-    DEBUG_PRINTLN("[BLE] Advertising switched to slow phase");
+    DEBUG_PRINTF("[BLE] Advertising switched to slow phase (timeout=%us)\n", slowTimeout);
 }
 
 void BleServices::_onAdvStopped() {
@@ -223,7 +265,17 @@ void BleServices::_onAdvStopped() {
     } else {
         // Phase lente terminée → advertising terminé
         _advertising = false;
-        DEBUG_PRINTLN("[BLE] Advertising stopped (all phases done)");
+
+        // Incrémenter le compteur d'échecs et appliquer backoff exponentiel
+        _advFailureCount++;
+        if (_advFailureCount > 3) {
+            // Après 3 échecs consécutifs, activer le backoff exponentiel
+            _advBackoffFactor = 1 << (_advFailureCount - 3); // 1, 2, 4, 8...
+            if (_advBackoffFactor > 8) _advBackoffFactor = 8;
+        }
+        _lastAdvFailureTime = millis();
+
+        DEBUG_PRINTF("[BLE] Advertising stopped (all phases done), failure count=%d\n", _advFailureCount);
 
         // Notifie main.cpp pour déclencher le System OFF
         if (_advStoppedCallback) {
@@ -240,6 +292,10 @@ void BleServices::stopAdvertising() {
 
 bool BleServices::isConnected() {
     return _connected && Bluefruit.connected();
+}
+
+bool BleServices::isNotifyEnabled() {
+    return _audioTxChar.notifyEnabled();
 }
 
 void BleServices::updateBatteryLevel(uint8_t level, bool charging) {
@@ -261,6 +317,8 @@ void BleServices::_onConnect(uint16_t connHandle) {
     _connHandle = connHandle;
     _connected = true;
     _advertising = false;
+    _resetAdvBackoff();  // Réinitialise le backoff après connexion réussie
+    DEBUG_PRINTF("[TIMING] BLE onConnect à t=%lums\n", millis());
 
     // Lancer la machine à états post-connexion (traitée dans update())
     // NE PAS bloquer ici — le callback doit retourner immédiatement
@@ -272,6 +330,9 @@ void BleServices::_onConnect(uint16_t connHandle) {
 }
 
 void BleServices::update() {
+    // Poll async flush progress (non-blocking replacement for waitForTxFlush)
+    updateFlush();
+
     if (_postConnectState == PC_IDLE || _postConnectState == PC_DONE) return;
     if (!_connected) {
         _postConnectState = PC_IDLE;
@@ -297,7 +358,7 @@ void BleServices::update() {
         memset(&gap_params, 0, sizeof(gap_params));
         gap_params.min_conn_interval = BLE_FAST_CONN_INTERVAL_MIN;
         gap_params.max_conn_interval = BLE_FAST_CONN_INTERVAL_MAX;
-        gap_params.slave_latency     = BLE_SLAVE_LATENCY;
+        gap_params.slave_latency     = 0;  // Pas de latency initiale (mode fast)
         gap_params.conn_sup_timeout  = BLE_SUPERVISION_TIMEOUT;
         uint32_t err = sd_ble_gap_conn_param_update(_connHandle, &gap_params);
         DEBUG_PRINTF("[BLE] Conn params: 0x%lx (sup_timeout=%dms)\n", err, BLE_SUPERVISION_TIMEOUT * 10);
@@ -350,7 +411,8 @@ void BleServices::update() {
     }
 
     case PC_DONE:
-        DEBUG_PRINTF("[BLE] Post-connect DONE. mtu=%d chunk=%d\n", _mtuSize, _transferChunkSize);
+        DEBUG_PRINTF("[TIMING] Post-connect DONE à t=%lums. mtu=%d chunk=%d\n",
+            millis(), _mtuSize, _transferChunkSize);
         _postConnectState = PC_IDLE;
         // Switch to idle connection interval to save battery
         setIdleConnectionMode();
@@ -531,12 +593,22 @@ bool BleServices::startAudioTransferWithHeader(const uint8_t* header, uint32_t h
 }
 
 bool BleServices::continueTransfer() {
+    // Guard: do not attempt transfer while post-connect negotiation is still in progress
+    if (_postConnectState != PC_IDLE) return true;
+
     if (!_transferring || !isConnected()) {
+        if (!_transferring) return false;
+        DEBUG_PRINTLN("[TIMING] continueTransfer: BLE déconnecté pendant transfert!");
+        _transferring = false;
         return false;
     }
 
     if (!_audioTxChar.notifyEnabled()) {
-        DEBUG_PRINTLN("[BLE] continueTransfer: notify NOT enabled, waiting...");
+        static uint32_t lastNotifyWarn = 0;
+        if (millis() - lastNotifyWarn > 1000) {
+            lastNotifyWarn = millis();
+            DEBUG_PRINTF("[TIMING] notify NOT enabled à t=%lums (phone n'a pas souscrit)\n", millis());
+        }
         return true;
     }
 
@@ -583,15 +655,16 @@ bool BleServices::continueTransfer() {
 
     if (headerDone && dataDone) {
         uint32_t totalSent = _headerSize + _transferSize;
-        DEBUG_PRINTF("[BLE] Transfer complete: %lu bytes sent\n", totalSent);
-        _transferring = false;
+        DEBUG_PRINTF("[BLE] Transfer queued: %lu bytes — flushing...\n", totalSent);
 
-        setIdleConnectionMode();
-
-        if (_transferCallback) {
-            _transferCallback(true);
-        }
-        return false;
+        // CRITIQUE: attendre que le SoftDevice ait réellement envoyé tous les paquets
+        // Replace blocking waitForTxFlush() with async trigger
+        _flushActive = true;
+        _flushStartTime = millis();
+        _flushSlotsAcquired = 0;
+        _pendingFlushCallback = _transferCallback; // will be called by updateFlush()
+        _transferring = false; // transfer queueing done, now flushing async
+        return false; // tell caller transfer is "done" (queueing complete)
     }
 
     return true;
@@ -628,6 +701,45 @@ void BleServices::disconnect() {
     }
 }
 
+bool BleServices::waitForTxFlush() {
+    if (!_connected || _connHandle == BLE_CONN_HANDLE_INVALID) return false;
+    BLEConnection* conn = Bluefruit.Connection(_connHandle);
+    if (!conn) return false;
+
+    DEBUG_PRINTLN("[BLE] Flush TX: attente envoi réel de tous les paquets...");
+
+    // Prendre tous les HVN slots = attendre que chaque HVN_TX_COMPLETE les libère
+    // Chaque getHvnPacket() bloque jusqu'à 100ms si le slot n'est pas encore libre
+    for (uint8_t i = 0; i < HVN_QUEUE_SIZE; i++) {
+        if (!conn->getHvnPacket()) {
+            DEBUG_PRINTF("[BLE] Flush TX: timeout au slot %d/%d\n", i, HVN_QUEUE_SIZE);
+            // Rendre les slots déjà pris
+            for (uint8_t j = 0; j < i; j++) {
+                conn->releaseHvnPacket();
+            }
+            return false;
+        }
+    }
+
+    // Tous les slots acquis = la queue HVN est vide = tout est parti
+    for (uint8_t i = 0; i < HVN_QUEUE_SIZE; i++) {
+        conn->releaseHvnPacket();
+    }
+
+    DEBUG_PRINTLN("[BLE] Flush TX: OK — tous les paquets envoyés");
+    return true;
+}
+
+void BleServices::disconnectAndStop() {
+    // Déconnecte ET empêche le redémarrage automatique de l'advertising
+    // Utilisé avant System OFF pour éviter que l'advertising relance
+    Bluefruit.Advertising.restartOnDisconnect(false);
+    if (_connected) {
+        Bluefruit.disconnect(_connHandle);
+    }
+    _advertising = false;
+}
+
 void BleServices::disable() {
     stopAdvertising();
     disconnect();
@@ -647,7 +759,7 @@ void BleServices::setFastConnectionMode() {
     memset(&params, 0, sizeof(params));
     params.min_conn_interval = BLE_FAST_CONN_INTERVAL_MIN;
     params.max_conn_interval = BLE_FAST_CONN_INTERVAL_MAX;
-    params.slave_latency     = BLE_SLAVE_LATENCY;
+    params.slave_latency     = 0;  // Pas de latency en mode fast pour réactivité maximale
     params.conn_sup_timeout  = BLE_SUPERVISION_TIMEOUT;
 
     uint32_t err = sd_ble_gap_conn_param_update(_connHandle, &params);
@@ -676,5 +788,105 @@ bool BleServices::sendButtonEvent(uint8_t event) {
     if (!_buttonEventChar.notifyEnabled()) return false;
 
     return _buttonEventChar.notify(&event, 1);
+}
+
+/**
+ * @brief Polls async flush progress (non-blocking replacement for waitForTxFlush)
+ */
+void BleServices::updateFlush() {
+    if (!_flushActive) return;
+    if (!_connected || _connHandle == BLE_CONN_HANDLE_INVALID) {
+        // Connection lost during flush → cancel
+        _flushActive = false;
+        if (_pendingFlushCallback) {
+            _pendingFlushCallback(false);
+            _pendingFlushCallback = nullptr;
+        }
+        DEBUG_PRINTLN("[BLE] Async flush cancelled (disconnected)");
+        return;
+    }
+
+    BLEConnection* conn = Bluefruit.Connection(_connHandle);
+    if (!conn) {
+        _flushActive = false;
+        if (_pendingFlushCallback) {
+            _pendingFlushCallback(false);
+            _pendingFlushCallback = nullptr;
+        }
+        DEBUG_PRINTLN("[BLE] Async flush cancelled (no conn object)");
+        return;
+    }
+
+    // Try to acquire next HVN slot (may block up to 100ms internally)
+    if (conn->getHvnPacket()) {
+        _flushSlotsAcquired++;
+        DEBUG_PRINTF("[BLE] Flush slot %d/%d acquired\n", _flushSlotsAcquired, HVN_QUEUE_SIZE);
+    }
+
+    // Timeout safety (should not happen with proper HVN_TX_COMPLETE events)
+    if (millis() - _flushStartTime > 5000) {
+        DEBUG_PRINTLN("[BLE] Async flush TIMEOUT (5s)");
+        for (uint8_t i = 0; i < _flushSlotsAcquired; i++) {
+            conn->releaseHvnPacket();
+        }
+        _flushSlotsAcquired = 0;
+        _flushActive = false;
+        if (_pendingFlushCallback) {
+            _pendingFlushCallback(false);
+            _pendingFlushCallback = nullptr;
+        }
+        return;
+    }
+
+    // Are all slots acquired?
+    if (_flushSlotsAcquired >= HVN_QUEUE_SIZE) {
+        // All packets have left the SoftDevice queue
+        for (uint8_t i = 0; i < _flushSlotsAcquired && i < HVN_QUEUE_SIZE; i++) {
+            conn->releaseHvnPacket();
+        }
+        _flushSlotsAcquired = 0;
+        _flushActive = false;
+        DEBUG_PRINTLN("[BLE] Async flush completed successfully");
+        if (_pendingFlushCallback) {
+            _pendingFlushCallback(true);
+            _pendingFlushCallback = nullptr;
+        }
+    }
+}
+
+// Réinitialise le backoff exponentiel de l'advertising après une connexion réussie
+void BleServices::_resetAdvBackoff() {
+    _advFailureCount = 0;
+    _advBackoffFactor = 1;
+    DEBUG_PRINTLN("[BLE] Backoff advertising réinitialisé");
+}
+
+// Calcule le timeout d'advertising avec backoff exponentiel
+uint16_t BleServices::_applyAdvBackoff(uint16_t baseTimeout) {
+    // Réinitialiser le backoff si le dernier échec date de plus d'une minute
+    if (_lastAdvFailureTime > 0 && (millis() - _lastAdvFailureTime > 60000)) {
+        _advFailureCount = 0;
+        _advBackoffFactor = 1;
+        _lastAdvFailureTime = 0;
+        DEBUG_PRINTLN("[BLE] Backoff réinitialisé (plus d'1mn depuis dernier échec)");
+    }
+
+    // Limiter le facteur de backoff à 8 (max 8× le timeout de base)
+    if (_advBackoffFactor > 8) {
+        _advBackoffFactor = 8;
+    }
+
+    // Appliquer le backoff
+    uint32_t backedOffTimeout = baseTimeout * _advBackoffFactor;
+
+    // Limiter à 180 secondes max (3 minutes) pour éviter des timeouts trop longs
+    if (backedOffTimeout > 180) {
+        backedOffTimeout = 180;
+    }
+
+    DEBUG_PRINTF("[BLE] Backoff: count=%d, factor=%lu, timeout=%lu/%us\n",
+                 _advFailureCount, _advBackoffFactor, backedOffTimeout, baseTimeout);
+
+    return (uint16_t)backedOffTimeout;
 }
 

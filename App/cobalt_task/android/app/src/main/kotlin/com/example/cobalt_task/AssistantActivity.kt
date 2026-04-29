@@ -52,6 +52,15 @@ class AssistantActivity : Activity() {
             )
         }
 
+        // Vérifier si le bouton Power → Assistant est activé dans les paramètres
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val powerAssistantEnabled = prefs.getBoolean("flutter.power_button_assistant", true)
+        if (!powerAssistantEnabled) {
+            Log.d(TAG, "  Power button assistant désactivé → ignoré")
+            finish()
+            return
+        }
+
         // MODE ASSISTANT : overlay bleu + pipeline IA
         // Afficher l'overlay immediatement pour feedback visuel instantane
         // (Flutter gerera l'enregistrement une fois le MethodChannel pret)
@@ -69,8 +78,8 @@ class AssistantActivity : Activity() {
         }
 
         // Stocker le flag pending_assist dans tous les cas (filet de securite cold start)
-        val prefs = getSharedPreferences("cobalt_launch", Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("pending_assist", true).apply()
+        val launchPrefs = getSharedPreferences("cobalt_launch", Context.MODE_PRIVATE)
+        launchPrefs.edit().putBoolean("pending_assist", true).apply()
 
         if (MainActivity.isEngineReady) {
             // WARM START: Flutter tourne deja, envoyer un broadcast sans ouvrir l'app

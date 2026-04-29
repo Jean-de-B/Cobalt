@@ -126,61 +126,20 @@ bool ExternalFileSystem::begin(void) {
     // Stratégie: on appelle begin() une première fois pour configurer les pins QSPI,
     // puis on envoie 0xAB via le périphérique QSPI maintenant initialisé,
     // puis on rappelle begin() pour retenter la détection JEDEC.
-    DEBUG_PRINTLN("[QSPI] Tentative init (peut échouer si flash en deep power-down)...");
+    // Init flash — utilise UNIQUEMENT l'API Adafruit (pas de registres directs)
+    DEBUG_PRINTLN("[QSPI] Init flash...");
     if (!_qspiFlash.begin(_flash_devices, 1)) {
-        // Échec probable: flash en deep power-down, JEDEC illisible
-        // Mais le périphérique QSPI et ses pins sont maintenant configurés
-        DEBUG_PRINTLN("[QSPI] Échec JEDEC → envoi wake-up 0xAB...");
-
-        NRF_QSPI->CINSTRCONF =
-            (0xAB << 0)  |  // opcode: Release from Deep Power-Down
-            (1 << 8)      |  // length: 1 = send opcode only (0 = rien envoyé!)
-            (0 << 12)     |  // lio2
-            (0 << 13)     |  // lio3
-            (0 << 14)     |  // wipwait
-            (0 << 15);       // wren
-        NRF_QSPI->CINSTRDAT0 = 0;
-        NRF_QSPI->EVENTS_READY = 0;
-        NRF_QSPI->TASKS_ACTIVATE = 1;
-
-        uint32_t timeout = 5000;
-        while (!NRF_QSPI->EVENTS_READY && timeout > 0) {
-            delayMicroseconds(1);
-            timeout--;
-        }
-        delayMicroseconds(100);  // tRES1 = ~30µs pour P25Q16H
+        // Échec: flash peut être en deep power-down ou absente
+        // Le transport QSPI est maintenant configuré (pins + périphérique)
+        // On envoie le wake-up via le transport Adafruit (pas de registres directs!)
+        DEBUG_PRINTLN("[QSPI] Échec JEDEC → wake-up via transport Adafruit...");
+        _qspiTransport.runCommand(0xAB);  // Release from Deep Power-Down
         delay(5);
 
-        // Diagnostic: lecture JEDEC manuelle via CINSTR (0x9F)
-        NRF_QSPI->CINSTRCONF =
-            (0x9F << 0)  |  // opcode: Read JEDEC ID
-            (4 << 8)      |  // length: 4 bytes (1 opcode + 3 response)
-            (0 << 12)     |  // lio2
-            (0 << 13)     |  // lio3
-            (0 << 14)     |  // wipwait
-            (0 << 15);       // wren
-        NRF_QSPI->CINSTRDAT0 = 0;
-        NRF_QSPI->EVENTS_READY = 0;
-        NRF_QSPI->TASKS_ACTIVATE = 1;
-        timeout = 5000;
-        while (!NRF_QSPI->EVENTS_READY && timeout > 0) {
-            delayMicroseconds(1);
-            timeout--;
-        }
-        uint32_t jedecRaw = NRF_QSPI->CINSTRDAT0;
-        uint8_t mfr = jedecRaw & 0xFF;
-        uint8_t type = (jedecRaw >> 8) & 0xFF;
-        uint8_t cap = (jedecRaw >> 16) & 0xFF;
-        DEBUG_PRINTF("[QSPI] JEDEC raw: 0x%08lX (MFR=0x%02X TYPE=0x%02X CAP=0x%02X)\n",
-                     jedecRaw, mfr, type, cap);
-        // P25Q16H attendu: MFR=0x85, TYPE=0x60, CAP=0x15
-        // Si 0x00/0xFF partout → pas de communication avec la flash
-
-        // Deuxième tentative
-        DEBUG_PRINTLN("[QSPI] Retry après wake-up...");
+        // Deuxième tentative (transport propre, état interne cohérent)
+        DEBUG_PRINTLN("[QSPI] Retry...");
         if (!_qspiFlash.begin(_flash_devices, 1)) {
-            DEBUG_PRINTLN("[QSPI] Erreur init flash P25Q16H (même après wake-up)");
-            DEBUG_PRINTLN("[QSPI] Vérifier: la flash externe est-elle soudée/connectée?");
+            DEBUG_PRINTLN("[QSPI] Erreur init flash P25Q16H");
             return false;
         }
     }

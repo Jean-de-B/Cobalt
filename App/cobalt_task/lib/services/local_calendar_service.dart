@@ -1,6 +1,7 @@
 import 'package:device_calendar/device_calendar.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:timezone/timezone.dart' as tz;
+import 'settings_service.dart';
 
 /// =============================================================================
 /// local_calendar_service.dart
@@ -62,59 +63,52 @@ class LocalCalendarService {
         print('  - "${cal.name}" | account: ${cal.accountName} | type: ${cal.accountType} | ${cal.isReadOnly == true ? "RO" : "RW"} | id: ${cal.id}');
       }
 
-      // PRIORITÉ 1: Chercher par accountType "com.google" (le plus fiable)
-      for (final calendar in calendars) {
-        if (calendar.isReadOnly == true) continue;
+      // Sélection selon le paramètre utilisateur
+      final preferred = SettingsService().calendarService;
+      // ignore: avoid_print
+      print('[Calendar] Service préféré: $preferred');
 
-        final accountType = (calendar.accountType ?? '').toLowerCase();
-        if (accountType.contains('com.google') || accountType.contains('google')) {
-          _defaultCalendarId = calendar.id;
-          // ignore: avoid_print
-          print('[Calendar] ✓ Google Calendar (type): ${calendar.name} (${calendar.accountName})');
-          break;
-        }
-      }
-
-      // PRIORITÉ 2: Chercher par accountName contenant gmail.com
-      if (_defaultCalendarId == null) {
+      if (preferred == 'samsung') {
+        // Chercher Samsung Calendar en priorité
         for (final calendar in calendars) {
           if (calendar.isReadOnly == true) continue;
-
+          final accountType = (calendar.accountType ?? '').toLowerCase();
           final accountName = (calendar.accountName ?? '').toLowerCase();
-          if (accountName.contains('gmail.com') || accountName.contains('google.com')) {
+          if (accountType.contains('samsung') || accountName.contains('samsung') || accountType.contains('sec.')) {
             _defaultCalendarId = calendar.id;
             // ignore: avoid_print
-            print('[Calendar] ✓ Google Calendar (email): ${calendar.name} (${calendar.accountName})');
+            print('[Calendar] ✓ Samsung Calendar: ${calendar.name}');
             break;
           }
         }
-      }
-
-      // PRIORITÉ 3: Exclure Samsung et prendre le premier autre modifiable
-      if (_defaultCalendarId == null) {
+      } else {
+        // Chercher Google Calendar en priorité
         for (final calendar in calendars) {
           if (calendar.isReadOnly == true) continue;
-
           final accountType = (calendar.accountType ?? '').toLowerCase();
-          final accountName = (calendar.accountName ?? '').toLowerCase();
-
-          // Exclure Samsung Calendar
-          if (accountType.contains('samsung') ||
-              accountName.contains('samsung') ||
-              accountType.contains('sec.')) {
+          if (accountType.contains('com.google') || accountType.contains('google')) {
+            _defaultCalendarId = calendar.id;
             // ignore: avoid_print
-            print('[Calendar] ✗ Samsung ignoré: ${calendar.name}');
-            continue;
+            print('[Calendar] ✓ Google Calendar: ${calendar.name} (${calendar.accountName})');
+            break;
           }
-
-          _defaultCalendarId = calendar.id;
-          // ignore: avoid_print
-          print('[Calendar] Calendrier par défaut (non-Samsung): ${calendar.name}');
-          break;
+        }
+        // Fallback par email
+        if (_defaultCalendarId == null) {
+          for (final calendar in calendars) {
+            if (calendar.isReadOnly == true) continue;
+            final accountName = (calendar.accountName ?? '').toLowerCase();
+            if (accountName.contains('gmail.com') || accountName.contains('google.com')) {
+              _defaultCalendarId = calendar.id;
+              // ignore: avoid_print
+              print('[Calendar] ✓ Google Calendar (email): ${calendar.name}');
+              break;
+            }
+          }
         }
       }
 
-      // PRIORITÉ 4: Dernier recours - premier modifiable
+      // Dernier recours - premier modifiable
       if (_defaultCalendarId == null) {
         for (final calendar in calendars) {
           if (calendar.isReadOnly == false) {

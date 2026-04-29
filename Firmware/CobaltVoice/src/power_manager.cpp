@@ -94,8 +94,10 @@ bool PowerManager::isCharging() {
 }
 
 void PowerManager::configureWakeupPin(uint32_t pin, uint32_t activeLevel) {
+    // Convertir le numéro Arduino (D1, D2...) en vrai GPIO nRF52840 (P0.xx)
+    uint32_t nrfPin = g_ADigitalPinMap[pin];
     nrf_gpio_cfg_sense_input(
-        pin,
+        nrfPin,
         (activeLevel == LOW) ? NRF_GPIO_PIN_PULLUP : NRF_GPIO_PIN_PULLDOWN,
         (activeLevel == LOW) ? NRF_GPIO_PIN_SENSE_LOW : NRF_GPIO_PIN_SENSE_HIGH
     );
@@ -151,27 +153,34 @@ void PowerManager::flashWakeUp() {
 }
 
 void PowerManager::enterDeepSleep() {
-    DEBUG_PRINTLN("[PWR] Entering System OFF...");
-
     // Désactive les périphériques non essentiels
     disableAllPeripherals();
 
-    // Optim #6: Configure le réveil sur les 3 boutons
+    // Configure le réveil sur les 3 boutons (D1=PTT, D2=Vol-, D3=Vol+)
     uint32_t activeLevel = BUTTON_ACTIVE_LOW ? LOW : HIGH;
     configureWakeupPin(PIN_BUTTON, activeLevel);
     configureWakeupPin(PIN_BUTTON_VOL_UP, activeLevel);
     configureWakeupPin(PIN_BUTTON_VOL_DOWN, activeLevel);
 
-    DEBUG_PRINTLN("[PWR] Wake sources: D1, D2, D3");
+    // Purger les événements SoftDevice en attente
+    for (int i = 0; i < 5; i++) {
+        sd_app_evt_wait();
+        delay(20);
+    }
 
-    delay(100);  // Laisse le temps aux messages Serial de sortir
-
-    // System OFF via SoftDevice (~0.4µA)
+    // Tentative 1: System OFF via SoftDevice (~0.4µA)
     sd_power_system_off();
 
-    // Fallback si SoftDevice n'est pas actif
-    NRF_POWER->SYSTEMOFF = 1;
+    // Fallback: désactiver le SoftDevice et forcer System OFF hardware
+    sd_softdevice_disable();
+    delay(50);
 
+    // Reconfigurer les wake pins (le SoftDevice a pu les réinitialiser)
+    configureWakeupPin(PIN_BUTTON, activeLevel);
+    configureWakeupPin(PIN_BUTTON_VOL_UP, activeLevel);
+    configureWakeupPin(PIN_BUTTON_VOL_DOWN, activeLevel);
+
+    NRF_POWER->SYSTEMOFF = 1;
     while(1) { __WFI(); }
 }
 
