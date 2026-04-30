@@ -82,10 +82,21 @@ class VoiceInputProcessor {
   // POINT D'ENTRÉE PRINCIPAL
   // ===========================================================================
 
-  /// Traite une transcription textuelle et exécute l'action correspondante
+  /// Intents qui n'ont de sens qu'en temps réel — ignorés si l'enregistrement est différé.
+  static const _instantIntents = {
+    ActionIntent.media,
+    ActionIntent.systemControl,
+    ActionIntent.call,
+    ActionIntent.navigation,
+    ActionIntent.appLaunch,
+    ActionIntent.timer,
+  };
+
+  /// Traite une transcription textuelle et exécute l'action correspondante.
   ///
-  /// C'est la fonction principale à appeler après avoir obtenu une transcription.
-  Future<VoiceProcessingResult> processVoiceInput(String transcript) async {
+  /// [isDeferred] : true si l'audio provient de la flash offline (reconnexion différée).
+  /// Dans ce cas, les commandes instantanées (media, volume, appel…) sont ignorées.
+  Future<VoiceProcessingResult> processVoiceInput(String transcript, {bool isDeferred = false}) async {
     final stopwatch = Stopwatch()..start();
 
     // ignore: avoid_print
@@ -112,6 +123,18 @@ class VoiceInputProcessor {
       print('[Processor] Action détectée: ${action.intent} (${action.runtimeType})');
       // ignore: avoid_print
       print('[Processor] Reasoning: ${action.reasoning}');
+
+      // Filtre différé : commandes instantanées ignorées si l'audio vient de la flash offline
+      if (isDeferred && _instantIntents.contains(action.intent)) {
+        // ignore: avoid_print
+        print('[Processor] Action IGNORÉE (différée + instant): ${action.intent}');
+        stopwatch.stop();
+        return VoiceProcessingResult(
+          transcript: transcript,
+          action: NoAction(reasoning: 'Commande instantanée ignorée (enregistrement différé)', memo: transcript),
+          processingTime: stopwatch.elapsed,
+        );
+      }
 
       // Étape 2: Exécuter l'action localement
       final executionResult = await _dispatcher.dispatch(action);

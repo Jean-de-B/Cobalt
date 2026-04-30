@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -54,6 +55,12 @@ class BleService {
   /// Caractéristique de la version firmware
   BluetoothCharacteristic? _fwVersionCharacteristic;
 
+  /// Caractéristique Debug Log (logs firmware via BLE)
+  BluetoothCharacteristic? _debugLogCharacteristic;
+  StreamSubscription? _debugLogSubscription;
+  final _debugLogController = StreamController<String>.broadcast();
+  Stream<String> get debugLogStream => _debugLogController.stream;
+
   /// Version firmware de l'appareil connecté (ex: "1.0.0")
   String? _firmwareVersion;
   String? get firmwareVersion => _firmwareVersion;
@@ -89,6 +96,10 @@ class BleService {
 
   /// Timer de reconnexion
   Timer? _reconnectTimer;
+
+  /// Timer heartbeat : vérifie que la connexion est vivante toutes les 20s
+  Timer? _heartbeatTimer;
+  static const int _heartbeatIntervalSec = 20;
 
   /// Subscription à l'état de l'adaptateur BT (pour react au BT on/off)
   StreamSubscription? _btStateSubscription;
@@ -197,6 +208,9 @@ class BleService {
   BleConnectionState get connectionState => _connectionState;
 
   /// Getter pour vérifier si connecté
+  /// ID du device appairé persisté (null si aucun device sélectionné)
+  String? get selectedDeviceId => _selectedDeviceId;
+
   bool get isConnected => _connectionState == BleConnectionState.connected ||
       _connectionState == BleConnectionState.syncing;
 
@@ -495,6 +509,7 @@ class BleService {
 
       // ignore: avoid_print
       print('BLE: Configuration terminée');
+      _startHeartbeat();
     } catch (e) {
       // ignore: avoid_print
       print('BLE: Erreur de connexion -> $e');
@@ -607,6 +622,13 @@ class BleService {
             _fwVersionCharacteristic = characteristic;
             // ignore: avoid_print
             print('BLE:   -> Firmware Version trouvée!');
+          }
+
+          // Caractéristique Debug Log (notifications firmware → téléphone)
+          if (charUuid == BleConstants.debugLogCharacteristicUuid.toLowerCase()) {
+            _debugLogCharacteristic = characteristic;
+            // ignore: avoid_print
+            print('BLE:   -> Debug Log trouvée!');
           }
         }
       }
@@ -972,11 +994,14 @@ class BleService {
 
   /// Gère une déconnexion (volontaire ou non)
   void _handleDisconnection() {
+    _stopHeartbeat();
     _resetBuffer();
     _batterySubscription?.cancel();
     _batterySubscription = null;
     _buttonSubscription?.cancel();
     _buttonSubscription = null;
+    _debugLogSubscription?.cancel();
+    _debugLogSubscription = null;
     _connectedDevice = null;
     // Garder _connectedDeviceName pour l'affichage pendant la reconnexion
     _txCharacteristic = null;
@@ -984,6 +1009,7 @@ class BleService {
     _buttonCharacteristic = null;
     _batteryCharacteristic = null;
     _fwVersionCharacteristic = null;
+    _debugLogCharacteristic = null;
     _firmwareVersion = null;
     _batteryLevel = -1;
     _isCharging = false;
@@ -1149,6 +1175,7 @@ class BleService {
   /// Déconnecte l'appareil (déconnexion volontaire)
   Future<void> disconnect() async {
     // Désactiver la reconnexion automatique (déconnexion volontaire)
+    _stopHeartbeat();
     _autoReconnectEnabled = false;
     _reconnectTimer?.cancel();
     _reconnectAttempts = 0;
@@ -1231,11 +1258,78 @@ class BleService {
   }
 
   // ---------------------------------------------------------------------------
+  // DEBUG LOG FIRMWARE
+  // ---------------------------------------------------------------------------
+
+  /// Active les notifications Debug Log (appelé par DebugScreen à l'ouverture)
+  Future<void> enableDebugLog() async {
+    if (_debugLogCharacteristic == null) return;
+    await _debugLogCharacteristic!.setNotifyValue(true);
+    _debugLogSubscription?.cancel();
+    _debugLogSubscription =
+        _debugLogCharacteristic!.onValueReceived.listen((data) {
+      if (data.isNotEmpty) {
+        final logMessage = utf8.decode(data, allowMalformed: true);
+        _debugLogController.add(logMessage);
+      }
+    });
+    // ignore: avoid_print
+    print('BLE: Debug Log activé');
+  }
+
+  /// Désactive les notifications Debug Log (appelé par DebugScreen à la fermeture)
+  Future<void> disableDebugLog() async {
+    _debugLogSubscription?.cancel();
+    _debugLogSubscription = null;
+    if (_debugLogCharacteristic != null) {
+      try {
+        await _debugLogCharacteristic!.setNotifyValue(false);
+      } catch (_) {}
+    }
+    // ignore: avoid_print
+    print('BLE: Debug Log désactivé');
+  }
+
+  // ---------------------------------------------------------------------------
+  // HEARTBEAT
+  // ---------------------------------------------------------------------------
+
+  /// Démarre un timer périodique qui lit la batterie pour vérifier que le lien
+  /// BLE est toujours vivant. Un échec déclenche une reconnexion immédiate.
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: _heartbeatIntervalSec),
+      (_) async {
+        if (_connectionState != BleConnectionState.connected) return;
+        final char = _batteryCharacteristic;
+        if (char == null) return;
+        try {
+          final value = await char.read().timeout(const Duration(seconds: 5));
+          if (value.isNotEmpty) _decodeBatteryValue(value[0]);
+        } catch (e) {
+          if (_connectionState == BleConnectionState.connected) {
+            // ignore: avoid_print
+            print('BLE: Heartbeat échoué → reconnexion forcée ($e)');
+            _handleDisconnection();
+          }
+        }
+      },
+    );
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  // ---------------------------------------------------------------------------
   // NETTOYAGE
   // ---------------------------------------------------------------------------
 
   /// Libère toutes les ressources
   Future<void> dispose() async {
+    _stopHeartbeat();
     _reconnectTimer?.cancel();
     _btStateSubscription?.cancel();
     await disconnect();

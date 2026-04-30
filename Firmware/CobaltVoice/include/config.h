@@ -142,7 +142,7 @@
 // Phase 2: Slow advertising (économie)
 #define ADV_SLOW_INTERVAL_MIN   1600    // 1000ms (en unités de 0.625ms)
 #define ADV_SLOW_INTERVAL_MAX   2400    // 1500ms
-#define ADV_SLOW_TIMEOUT_S      120     // 2 minutes en mode lent
+#define ADV_SLOW_TIMEOUT_S      540     // 9 minutes en mode lent (60s fast + 540s slow = 10 min total)
 
 // Après les deux phases: advertising stoppé → System OFF
 
@@ -179,10 +179,15 @@
 #define DEBUG_SERIAL            1       // 1 = debug (UART activé)
 #define DEBUG_BAUD_RATE         115200
 
+// BLE debug log characteristic UUID
+#define UUID_DEBUG_LOG  "6E400006-B5A3-F393-E0A9-E50E24DCCA9E"
+
+#include "debug_ble.h"
+
 #if DEBUG_SERIAL
   #define DEBUG_PRINT(x)        Serial.print(x)
-  #define DEBUG_PRINTLN(x)      Serial.println(x)
-  #define DEBUG_PRINTF(...)     Serial.printf(__VA_ARGS__)
+  #define DEBUG_PRINTLN(x)      do { Serial.println(x); debugBle.log(String(x).c_str()); debugBle.log("\n"); } while(0)
+  #define DEBUG_PRINTF(...)     do { Serial.printf(__VA_ARGS__); debugBle.logf(__VA_ARGS__); } while(0)
 #else
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x)

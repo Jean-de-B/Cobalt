@@ -41,6 +41,11 @@ class BleConstants {
   static const String fwVersionCharacteristicUuid =
       '6e400005-b5a3-f393-e0a9-e50e24dcca9e';
 
+  /// UUID de la caractéristique Debug Log (Notify: firmware → téléphone)
+  /// Envoie les logs Serial du firmware en UTF-8 via BLE
+  static const String debugLogCharacteristicUuid =
+      '6e400006-b5a3-f393-e0a9-e50e24dcca9e';
+
   /// Commande pour entrer en mode DFU OTA
   static const int cmdEnterDfu = 0xFD;
 

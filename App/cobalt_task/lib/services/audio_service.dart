@@ -274,7 +274,7 @@ class AudioService {
       // Le wake lock est géré dans _transcribeAndUpdate pour les opérations longues
       // ignore: avoid_print
       print('AUDIO: Lancement de la transcription...');
-      _transcribeAndUpdate(note, wavData); // Fire-and-forget (pas de await)
+      _transcribeAndUpdate(note, wavData, isDeferred: header.isDeferred); // Fire-and-forget (pas de await)
     } catch (e, stackTrace) {
       // Log l'erreur mais ne pas crasher
       // ignore: avoid_print
@@ -438,7 +438,7 @@ class AudioService {
   ///
   /// Utilise un wake lock pour maintenir le CPU actif en arrière-plan.
   /// Note: Le wake lock principal est géré par BleService quand connecté
-  Future<void> _transcribeAndUpdate(VoiceNote note, Uint8List wavData) async {
+  Future<void> _transcribeAndUpdate(VoiceNote note, Uint8List wavData, {bool isDeferred = false}) async {
     // ignore: avoid_print
     print('TRANSCRIPTION: Début du traitement (wake lock géré par BLE)');
 
@@ -549,7 +549,7 @@ class AudioService {
 
       VoiceProcessingResult? actionResult;
       try {
-        actionResult = await _voiceInputProcessor.processVoiceInput(result.text);
+        actionResult = await _voiceInputProcessor.processVoiceInput(result.text, isDeferred: isDeferred);
         // ignore: avoid_print
         print('LOCAL_ACTION: Action détectée = ${actionResult.action.intent} (${actionResult.action.runtimeType})');
         // ignore: avoid_print
@@ -1526,6 +1526,9 @@ class AudioService {
 
   /// Accès au service BLE (pour l'écran debug et DFU)
   BleService get bleServiceInstance => _bleService;
+
+  /// ID du device appairé (null si aucun)
+  String? get selectedDeviceId => _bleService.selectedDeviceId;
 
   /// Stream des appareils découverts (pour le device picker)
   Stream<List<ScanResult>> get discoveredDevicesStream =>

@@ -66,6 +66,9 @@
     <!-- Ignorer les optimisations de batterie -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
+    <!-- Auto-démarrage au boot (foreground service BLE) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
     <!-- SMS direct (envoi sans UI) -->
     <uses-permission android:name="android.permission.SEND_SMS"/>
 

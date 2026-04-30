@@ -24,7 +24,7 @@ typedef struct __attribute__((packed)) {
     uint32_t dataSize;          // Taille des données ADPCM - offset 16-19
     int16_t  initialSample;     // Sample initial pour décodage - offset 20-21
     int8_t   initialIndex;      // Index initial pour décodage - offset 22
-    uint8_t  reserved1;         // Padding - offset 23
+    uint8_t  reserved1;         // 0x00 = live (direct BLE), 0x01 = différé (depuis flash offline) - offset 23
     uint8_t  reserved2[10];     // Padding supplémentaire - offset 24-33
 } AudioFileHeader_t;
 
@@ -111,6 +111,12 @@ public:
      * @brief Vérifie si un enregistrement est disponible
      */
     bool hasRecording() { return _hasValidRecording; }
+
+    /**
+     * @brief Marque l'enregistrement comme différé (chargé depuis flash offline)
+     * Positionne reserved1 = 0x01 dans le header avant le transfert BLE.
+     */
+    void markAsDeferred() { _header.reserved1 = 0x01; }
 
     /**
      * @brief Obtient le pointeur vers le header

@@ -606,25 +606,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final showDebug = SettingsService().debugConsole;
-
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      extendBodyBehindAppBar: true,
-      appBar: _buildAppBar(),
-      body: showDebug
-          ? Column(
-              children: [
-                Expanded(child: _buildBody()),
-                const _DebugConsolePanel(),
-              ],
-            )
-          : _buildBody(),
-      floatingActionButton: Padding(
-        padding: EdgeInsets.only(bottom: showDebug ? 180 : 0),
-        child: _buildPTTButton(),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    return StreamBuilder<void>(
+      stream: SettingsService().onChanged,
+      builder: (context, _) {
+        final showDebug = SettingsService().debugConsole;
+        return Scaffold(
+          backgroundColor: AppColors.background,
+          extendBodyBehindAppBar: true,
+          appBar: _buildAppBar(),
+          body: showDebug
+              ? Column(
+                  children: [
+                    Expanded(child: _buildBody()),
+                    const _DebugConsolePanel(),
+                  ],
+                )
+              : _buildBody(),
+          floatingActionButton: Padding(
+            padding: EdgeInsets.only(bottom: showDebug ? 180 : 0),
+            child: _buildPTTButton(),
+          ),
+          floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+        );
+      },
     );
   }
 

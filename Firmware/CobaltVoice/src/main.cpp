@@ -43,6 +43,10 @@
 // === CONFIGURATION ===
 const uint32_t MIN_RECORDING_MS = 300;
 
+// Forward declarations
+void startRecording();
+void stopRecording();
+
 // === ÉTAT SYSTÈME ===
 volatile bool recording = false;  // volatile: lu dans ISR PDM (onAudioData)
 bool transferring = false;
@@ -68,6 +72,9 @@ uint8_t testBuffer[64];
 
 // Flag pour System OFF déclenché par fin d'advertising
 volatile bool advStoppedFlag = false;
+
+// Timestamp de la connexion BLE courante (0 = déconnecté)
+uint32_t connectedSince = 0;
 
 // === CALLBACK ADVERTISING STOPPED ===
 void onAdvertisingStopped() {
@@ -156,7 +163,15 @@ void handleRecordingComplete() {
     } else {
         saveToFlash();
         audioStorage.clear();
-        ledController.off();
+        // Si le bouton est encore maintenu pendant la sauvegarde → enregistrement immédiat
+        if (!bleServices.isConnected() && btnMain.readRawPressed() && !flashStorage.isFull()) {
+            timedRecordingDuration = 0;
+            startRecording();
+            DEBUG_PRINTLN("[REC] Bouton maintenu → enregistrement immédiat après sauvegarde");
+        } else {
+            // Note sauvée, montre cherche le téléphone
+            ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
+        }
     }
 }
 
@@ -165,6 +180,8 @@ void checkAndSync() {
     if (!bleServices.isConnected()) return;
     if (recording || transferring) return;
     if (!flashStorage.hasPendingFiles()) return;
+    // Attend 2s après connexion pour laisser PHY/DLE se stabiliser
+    if (connectedSince == 0 || millis() - connectedSince < 2000) return;
 
     DEBUG_PRINTF("[SYNC] %lu fichier(s) en attente de sync\n", flashStorage.getPendingCount());
 
@@ -226,7 +243,7 @@ void stopRecording() {
     lastRecordingDuration = millis() - recordingStartTime;
 
     if (totalSamples > 0) {
-        ledController.setColorImmediate(LED_COLOR_GREEN);
+        ledController.setColorImmediate(LED_COLOR_YELLOW);  // Jaune = sauvegarde en cours
         DEBUG_PRINTF("[REC] Terminé: %lu samples, %lu bytes, %lu ms\n", totalSamples, bytes, duration);
     } else {
         DEBUG_PRINTLN("[REC] ERREUR: Aucun sample!");
@@ -432,17 +449,64 @@ void loop() {
     // === BLE POST-CONNECT SETUP (machine à états non-bloquante) ===
     bleServices.update();
 
+    // === DEBUG BLE: vide le ring buffer vers la caractéristique notify ===
+    debugBle.flush();
+
     // === DÉTECTION CONNEXION/DÉCONNEXION → LED ===
     static bool wasConnected = false;
     bool isNowConnected = bleServices.isConnected();
     if (isNowConnected && !wasConnected && !recording && !transferring) {
         // Vient de se connecter → LED éteinte (connecté = silencieux)
         ledController.off();
+        if (flashStorage.hasPendingFiles()) {
+            DEBUG_PRINTF("[SYNC] Connexion BLE: %lu note(s) offline detectee(s)\n",
+                         flashStorage.getPendingCount());
+        } else {
+            DEBUG_PRINTLN("[SYNC] Connexion BLE: aucune note offline");
+        }
     } else if (!isNowConnected && wasConnected && !recording && !transferring) {
         // Vient de se déconnecter → LED bleue clignotante (recherche)
         ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
     }
+    if (isNowConnected && connectedSince == 0) connectedSince = now;
+    if (!isNowConnected) connectedSince = 0;
     wasConnected = isNowConnected;
+
+    // === LED CHARGE (non-debug: vert fixe pendant charge, éteinte si pleine) ===
+    // En debug la LED reste pilotée par la logique connexion/déconnexion classique.
+#if !DEBUG_SERIAL
+    {
+        static bool prevCharging = false;
+        static bool prevFull     = false;
+        static bool prevConn     = false;
+        static bool prevRec      = true;   // true → force évaluation au 1er tour de boucle
+        static bool prevXfer     = true;
+
+        bool chargingNow = powerManager.isCharging();
+        bool fullNow     = chargingNow && powerManager.isBatteryFull();
+
+        bool changed = (chargingNow != prevCharging) || (fullNow != prevFull) ||
+                       (isNowConnected != prevConn) ||
+                       (recording != prevRec) || (transferring != prevXfer);
+
+        if (changed && !recording && !transferring) {
+            if (chargingNow && !fullNow) {
+                ledController.set(LED_COLOR_GREEN, LED_MODE_SOLID);
+            } else if (chargingNow) {
+                ledController.off();
+            } else if (isNowConnected) {
+                ledController.off();
+            } else {
+                ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
+            }
+        }
+        prevCharging = chargingNow;
+        prevFull     = fullNow;
+        prevConn     = isNowConnected;
+        prevRec      = recording;
+        prevXfer     = transferring;
+    }
+#endif
 
     static uint32_t lastBatteryBleUpdate = 0;
     if (isNowConnected && (now - lastBatteryBleUpdate >= BATTERY_CHECK_INTERVAL)) {
@@ -775,7 +839,10 @@ void loop() {
                                        flashStorage.getPendingCount());
                     } else {
                         DEBUG_PRINTLN("[SYNC] Tous les fichiers synchronisés!");
-                        // Optim #8: Remet la flash en deep power-down
+                        // Reformate LittleFS pour restaurer les temps d'effacement rapides.
+                        // Le BLE peut se déconnecter pendant le format (~15s) — c'est normal,
+                        // toutes les notes sont déjà transférées.
+                        flashStorage.reformat();
                         powerManager.flashDeepPowerDown();
                     }
                 } else {
@@ -802,8 +869,14 @@ void loop() {
     if (advStoppedFlag) {
         advStoppedFlag = false;
         if (!bleServices.isConnected() && !recording && !transferring && !powerManager.isCharging()) {
-            DEBUG_PRINTLN("[PWR] Advertising terminé sans connexion → System OFF");
-            enterSystemOff();
+            if (flashStorage.hasPendingFiles()) {
+                // Notes en attente : relance l'advertising pour permettre la reconnexion
+                DEBUG_PRINTLN("[PWR] Notes en attente → redémarre advertising");
+                bleServices.startAdvertising();
+            } else {
+                DEBUG_PRINTLN("[PWR] Advertising terminé sans connexion → System OFF");
+                enterSystemOff();
+            }
         } else if (powerManager.isCharging() && !bleServices.isConnected()) {
             // USB connecté mais pas de BLE: relancer l'advertising
             DEBUG_PRINTLN("[PWR] Advertising terminé mais USB connecté → restart advertising");
@@ -812,8 +885,10 @@ void loop() {
     }
 
     // === AUTO-OFF: SYSTEM OFF APRÈS INACTIVITÉ ===
+    // Ne pas dormir tant que des notes offline attendent d'être synchronisées :
+    // le téléphone doit pouvoir se reconnecter pendant la fenêtre d'advertising.
     if (!recording && !transferring && !bleServices.isConnected() && !powerManager.isCharging()) {
-        if (now - lastActivityTime >= SLEEP_TIMEOUT_MS) {
+        if (now - lastActivityTime >= SLEEP_TIMEOUT_MS && !flashStorage.hasPendingFiles()) {
             enterSystemOff();
         }
     }

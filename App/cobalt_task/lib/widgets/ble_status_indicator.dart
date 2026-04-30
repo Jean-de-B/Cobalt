@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../constants/app_constants.dart';
+import '../screens/debug_screen.dart';
 import '../services/audio_service.dart';
 import '../services/dfu_service.dart';
 
@@ -183,6 +184,41 @@ class BleStatusIndicator extends StatelessWidget {
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                             color: AppColors.bleSyncing,
+                          )),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Debug firmware
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      audioService.stopBrowseScan();
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => DebugScreen(
+                            bleService: audioService.bleServiceInstance,
+                          ),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.terminal, size: 14, color: Colors.orange),
+                          SizedBox(width: 4),
+                          Text('Debug', style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orange,
                           )),
                         ],
                       ),

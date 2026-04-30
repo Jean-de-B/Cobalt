@@ -34,6 +34,12 @@ public:
     bool isBatteryCritical();
 
     /**
+     * @brief Vérifie si la batterie est pleine (charge terminée)
+     * @return true si tension ≥ 4.1V (marge ADC sous VBAT_FULL=4.2V)
+     */
+    bool isBatteryFull();
+
+    /**
      * @brief Vérifie si la batterie est faible
      * @return true si < 20%
      */

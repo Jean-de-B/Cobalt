@@ -55,8 +55,11 @@ static int _qspi_prog(const struct lfs_config *c, lfs_block_t block,
     uint32_t addr = block * QSPI_SECTOR_SIZE + off;
     uint32_t wr = _qspiFlash.writeBuffer(addr, (const uint8_t*)buffer, size);
     if (wr != size) {
-        DEBUG_PRINTF("[LFS-PROG] FAIL block=%lu off=%lu size=%lu wr=%lu\n",
-                     (uint32_t)block, (uint32_t)off, (uint32_t)size, wr);
+        uint32_t qspiStatus = NRF_QSPI->STATUS;
+        DEBUG_PRINTF("[LFS-PROG] FAIL block=%lu off=%lu size=%lu wr=%lu\n"
+                     "  addr=0x%08lX buf=0x%08lX align=%lu qspiStat=0x%08lX\n",
+                     (uint32_t)block, (uint32_t)off, (uint32_t)size, wr,
+                     addr, (uint32_t)buffer, (uint32_t)buffer & 3, qspiStatus);
         return LFS_ERR_IO;
     }
     return LFS_ERR_OK;

@@ -64,6 +64,12 @@ public:
     uint32_t getPendingCount();
 
     /**
+     * @brief Formate le filesystem LittleFS pour restaurer des temps d'effacement rapides.
+     * À appeler uniquement quand hasPendingFiles() == false (aucune note à conserver).
+     */
+    void reformat();
+
+    /**
      * @brief Vérifie si la flash est pleine
      * (plus d'espace ou max fichiers atteint)
      */

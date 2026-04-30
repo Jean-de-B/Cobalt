@@ -126,6 +126,9 @@ bool FlashStorage::saveCurrentRecording() {
     uint32_t totalWritten = 0;
     const uint32_t WRITE_BLOCK = 512;
 
+    DEBUG_PRINTF("[FLASH] data ptr=0x%08lX align=%lu size=%lu\n",
+                 (uint32_t)data, (uint32_t)data & 3, dataSize);
+
     while (totalWritten < dataSize) {
         uint32_t toWrite = min(WRITE_BLOCK, dataSize - totalWritten);
         written = file.write(data + totalWritten, toWrite);
@@ -257,6 +260,9 @@ bool FlashStorage::loadNextIntoAudioStorage() {
     // Finalise avec les infos du header
     audioStorage.finalizeRecording(header.totalSamples, header.initialSample, header.initialIndex);
 
+    // Marque comme différé : l'app ne doit pas exécuter les commandes instantanées
+    audioStorage.markAsDeferred();
+
     // Mémorise le fichier pour suppression après transfert
     strncpy(_currentSyncPath, filepath, FLASH_MAX_FILENAME - 1);
     _currentSyncPath[FLASH_MAX_FILENAME - 1] = '\0';
@@ -294,6 +300,16 @@ bool FlashStorage::deleteCurrentSyncFile() {
 
     DEBUG_PRINTLN("[FLASH] Erreur suppression");
     return false;
+}
+
+void FlashStorage::reformat() {
+    DEBUG_PRINTLN("[FLASH] Reformatage LittleFS (restaure les temps d'effacement)...");
+    ExternalFS.format();
+    _nextIndex = 1;
+    _fileCount = 0;
+    _usedBytes = 0;
+    ExternalFS.begin();
+    DEBUG_PRINTLN("[FLASH] Reformatage terminé");
 }
 
 bool FlashStorage::hasPendingFiles() {

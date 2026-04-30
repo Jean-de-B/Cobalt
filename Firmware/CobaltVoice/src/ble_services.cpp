@@ -44,6 +44,12 @@ static const uint8_t FW_VERSION_UUID[] = {
     0x93, 0xF3, 0xA3, 0xB5, 0x05, 0x00, 0x40, 0x6E
 };
 
+// Debug Log characteristic UUID: 6E400006-B5A3-F393-E0A9-E50E24DCCA9E
+static const uint8_t DEBUG_LOG_UUID[] = {
+    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
+    0x93, 0xF3, 0xA3, 0xB5, 0x06, 0x00, 0x40, 0x6E
+};
+
 // Callbacks Bluefruit
 void ble_connect_callback(uint16_t connHandle) {
     if (_bleInstance) _bleInstance->_onConnect(connHandle);
@@ -156,6 +162,15 @@ void BleServices::setupServices() {
     uint8_t version[3] = { FIRMWARE_VERSION_MAJOR, FIRMWARE_VERSION_MINOR, FIRMWARE_VERSION_PATCH };
     _fwVersionChar.write(version, 3);
     _fwVersionChar.begin();
+
+    // Caractéristique Debug Log (Notify) — relaie les logs Serial via BLE
+    _debugLogChar = BLECharacteristic(DEBUG_LOG_UUID);
+    _debugLogChar.setProperties(CHR_PROPS_NOTIFY);
+    _debugLogChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+    _debugLogChar.setMaxLen(BLE_MTU_SIZE - 3);
+    _debugLogChar.begin();
+
+    debugBle.begin(&_debugLogChar);
 
     DEBUG_PRINTLN("[BLE] Services configured");
 }
@@ -352,8 +367,13 @@ void BleServices::update() {
     case PC_DONE:
         DEBUG_PRINTF("[BLE] Post-connect DONE. mtu=%d chunk=%d\n", _mtuSize, _transferChunkSize);
         _postConnectState = PC_IDLE;
-        // Switch to idle connection interval to save battery
-        setIdleConnectionMode();
+        // Ne pas passer en idle si un transfert est déjà en cours
+        // (checkAndSync() peut démarrer avant PC_DONE sur connexion rapide)
+        if (!_transferring) {
+            setIdleConnectionMode();
+        } else {
+            DEBUG_PRINTLN("[BLE] PC_DONE: transfert actif, skip idle mode");
+        }
         break;
 
     default:
@@ -535,10 +555,15 @@ bool BleServices::continueTransfer() {
         return false;
     }
 
+    static bool _waitNotifyMsgShown = false;
     if (!_audioTxChar.notifyEnabled()) {
-        DEBUG_PRINTLN("[BLE] continueTransfer: notify NOT enabled, waiting...");
+        if (!_waitNotifyMsgShown) {
+            DEBUG_PRINTLN("[BLE] Sync pret, attente souscription notifications app...");
+            _waitNotifyMsgShown = true;
+        }
         return true;
     }
+    _waitNotifyMsgShown = false;
 
     uint32_t sentThisCall = 0;
 

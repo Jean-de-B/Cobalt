@@ -59,6 +59,11 @@ public:
     uint16_t getConnectionHandle() { return _connHandle; }
 
     /**
+     * @brief Obtient un pointeur vers la caractéristique Debug Log
+     */
+    BLECharacteristic* getDebugLogChar() { return &_debugLogChar; }
+
+    /**
      * @brief Obtient le MTU négocié
      */
     uint16_t getMtuSize() { return _mtuSize; }
@@ -210,6 +215,7 @@ private:
     BLECharacteristic _audioRxChar;        // RX (Write) - commandes
     BLECharacteristic _buttonEventChar;    // Button Event (Notify)
     BLECharacteristic _fwVersionChar;      // Firmware Version (Read + Notify)
+    BLECharacteristic _debugLogChar;       // Debug Log (Notify) — 6E400006
 
     // État connexion
     uint16_t _connHandle;

@@ -85,6 +85,10 @@ bool PowerManager::isBatteryCritical() {
     return _lastVoltage < VBAT_CRITICAL && _lastVoltage > 0;
 }
 
+bool PowerManager::isBatteryFull() {
+    return _lastVoltage >= 4.1f && _lastVoltage > 0;
+}
+
 bool PowerManager::isBatteryLow() {
     return _lastPercent < 20;
 }

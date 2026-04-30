@@ -36,14 +36,31 @@ class LocalMediaService {
   final LocalSpotifyService _spotifyService = LocalSpotifyService();
   LocalSpotifyService get spotifyService => _spotifyService;
 
-  /// Initialise le service (MediaKeys uniquement)
-  /// Spotify s'initialise à la demande via login() pour éviter les ANR
+  /// Initialise le service.
+  /// Spotify est initialisé ici pour charger les tokens et écouter son stream.
   Future<void> initialize() async {
     if (_initialized) return;
-
     _initialized = true;
+
+    // Charger les tokens Spotify (rapide, lecture fichier async)
+    await _spotifyService.initialize();
+
+    // Si Spotify est déjà connecté (tokens valides), s'assurer qu'il est sélectionné
+    if (_spotifyService.isConnected) {
+      SettingsService().musicService = 'spotify';
+    }
+
+    // Écouter les connexions futures (OAuth success) pour auto-sélectionner Spotify
+    _spotifyService.connectionStream.listen((connected) {
+      if (connected) {
+        SettingsService().musicService = 'spotify';
+        // ignore: avoid_print
+        print('[Media] Spotify connecté → musicService = spotify');
+      }
+    });
+
     // ignore: avoid_print
-    print('[Media] Service initialisé (MethodChannel)');
+    print('[Media] Service initialisé (MethodChannel + Spotify)');
   }
 
   /// Exécute une commande de contrôle média
@@ -83,7 +100,13 @@ class LocalMediaService {
         }
       } else {
         // ignore: avoid_print
-        print('[Media] Spotify NON connecté → fallback MediaKey');
+        if (preferredMusic != 'spotify') {
+          // ignore: avoid_print
+          print('[Media] Service préféré = "$preferredMusic" (pas Spotify) → fallback MediaKey');
+        } else {
+          // ignore: avoid_print
+          print('[Media] Spotify tokens absents → fallback MediaKey');
+        }
       }
 
       switch (controlType) {

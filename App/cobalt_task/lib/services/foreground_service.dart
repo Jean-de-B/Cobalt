@@ -134,7 +134,7 @@ class CobaltForegroundService {
       foregroundTaskOptions: const ForegroundTaskOptions(
         interval: 300000,
         isOnceEvent: true,
-        autoRunOnBoot: false,
+        autoRunOnBoot: true,
         allowWakeLock: true,
         allowWifiLock: true,
       ),

@@ -81,6 +81,10 @@ class CvoxHeader {
   /// Index initial du pas de quantification
   final int initialIndex;
 
+  /// True si l'enregistrement provient de la flash offline (différé)
+  /// False si envoyé en direct lors de l'enregistrement (live)
+  final bool isDeferred;
+
   CvoxHeader({
     required this.magic,
     required this.version,
@@ -92,6 +96,7 @@ class CvoxHeader {
     required this.dataSize,
     required this.initialSample,
     required this.initialIndex,
+    this.isDeferred = false,
   });
 
   /// Parse un header CVOX depuis un buffer de bytes
@@ -137,6 +142,7 @@ class CvoxHeader {
       dataSize: byteData.getUint32(16, Endian.little),
       initialSample: byteData.getInt16(20, Endian.little),
       initialIndex: data[22].toSigned(8), // int8
+      isDeferred: data[23] == 0x01,
     );
   }
 
