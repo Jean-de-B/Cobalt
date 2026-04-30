@@ -195,6 +195,32 @@ class MainActivity : FlutterActivity() {
                     val success = playSearchMedia(query, app)
                     result.success(success)
                 }
+                "openSamsungNotes" -> {
+                    val text = call.argument<String>("text") ?: ""
+                    try {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, text)
+                            setPackage("com.samsung.android.app.notes")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // Fallback : intent générique
+                        try {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(Intent.createChooser(intent, "Enregistrer la note"))
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.success(false)
+                        }
+                    }
+                }
                 "isMusicActive" -> {
                     val isActive = isMusicPlaying()
                     result.success(isActive)
@@ -479,6 +505,20 @@ class MainActivity : FlutterActivity() {
         notificationReceiver = null
         notificationEventSink = null
         super.onDestroy()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // Intercepter le bouton assistant des casques BT
+        if (keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val headsetEnabled = prefs.getBoolean("flutter.headset_assistant", false)
+            if (headsetEnabled) {
+                Log.d(TAG, "Headset VOICE_ASSIST → lancement assistant Cobalt")
+                customNotifChannel?.invokeMethod("onAssistRecordPressed", null)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -978,6 +1018,9 @@ class MainActivity : FlutterActivity() {
      * Retourne le package name d'une app média connue
      */
     private fun getMediaAppPackage(appName: String): String? {
+        // Si c'est déjà un package name (contient un point), le retourner tel quel
+        if (appName.contains('.')) return appName
+
         return when (appName.lowercase()) {
             "spotify" -> "com.spotify.music"
             "youtube_music", "youtubemusic", "youtube music" -> "com.google.android.apps.youtube.music"

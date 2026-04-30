@@ -52,11 +52,15 @@ class _MemoCardState extends State<MemoCard> {
 
   String get _intent => _action?['intent'] as String? ?? 'none';
 
-  /// La section debug est disponible si la note a un texte transcrit
+  /// La section détail est disponible si la note a un texte transcrit ou un audio
   bool get _canExpand =>
       !widget.note.isProcessing &&
-      widget.note.errorMessage == null &&
-      widget.note.text.isNotEmpty;
+      (widget.note.text.isNotEmpty || widget.note.audioPath.isNotEmpty);
+
+  /// True si la note est une fiche rejetée (silence, hallucination)
+  bool get _isRejected =>
+      widget.note.errorMessage != null &&
+      (widget.note.errorMessage == 'silence' || widget.note.errorMessage == 'hallucination');
 
   @override
   Widget build(BuildContext context) {
@@ -72,7 +76,9 @@ class _MemoCardState extends State<MemoCard> {
   Widget _buildCard() {
     return GestureDetector(
       onTap: _canExpand ? () => setState(() => _isExpanded = !_isExpanded) : null,
-      child: Container(
+      child: Opacity(
+        opacity: _isRejected ? 0.5 : 1.0,
+        child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -110,6 +116,7 @@ class _MemoCardState extends State<MemoCard> {
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -152,6 +159,11 @@ class _MemoCardState extends State<MemoCard> {
             ),
           ),
         ],
+        const SizedBox(width: 6),
+        Text(
+          _getTimeString(),
+          style: AppTextStyles.metadata.copyWith(fontSize: 11),
+        ),
       ],
     );
   }
@@ -247,15 +259,12 @@ class _MemoCardState extends State<MemoCard> {
       default:
         final memo = params['memo'] as String?;
         if (memo == null || memo.isEmpty) return const SizedBox.shrink();
-        final lines = memo.split('\n');
-        if (lines.length <= 1) return const SizedBox.shrink();
-        final rest = lines.skip(1).join('\n').trim();
-        if (rest.isEmpty) return const SizedBox.shrink();
+        // Afficher la transcription complète
+        final displayText = memo.trim();
+        if (displayText.isEmpty) return const SizedBox.shrink();
         return Text(
-          rest,
+          displayText,
           style: AppTextStyles.cardBody,
-          maxLines: 5,
-          overflow: TextOverflow.ellipsis,
         );
     }
   }

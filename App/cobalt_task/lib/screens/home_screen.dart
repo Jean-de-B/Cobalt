@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:android_intent_plus/flag.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../constants/app_constants.dart';
 import '../models/incoming_message.dart';
@@ -26,6 +30,9 @@ import '../services/fintecture_service.dart';
 import '../models/fintecture_transaction.dart';
 import '../services/local_sms_service.dart';
 import 'settings_screen.dart';
+import '../services/settings_service.dart';
+import '../services/debug_console_service.dart';
+import '../services/transcription_service.dart';
 import '../widgets/ble_status_indicator.dart';
 import '../widgets/memo_card.dart';
 
@@ -599,12 +606,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final showDebug = SettingsService().debugConsole;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       extendBodyBehindAppBar: true,
       appBar: _buildAppBar(),
-      body: _buildBody(),
-      floatingActionButton: _buildPTTButton(),
+      body: showDebug
+          ? Column(
+              children: [
+                Expanded(child: _buildBody()),
+                const _DebugConsolePanel(),
+              ],
+            )
+          : _buildBody(),
+      floatingActionButton: Padding(
+        padding: EdgeInsets.only(bottom: showDebug ? 180 : 0),
+        child: _buildPTTButton(),
+      ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
@@ -2005,11 +2024,18 @@ class _MessagesSheetContent extends StatefulWidget {
 }
 
 class _MessagesSheetContentState extends State<_MessagesSheetContent> {
-  /// Index du message en mode réponse (-1 = aucun)
+  /// Index du message en mode réponse clavier (-1 = aucun)
   int _replyIndex = -1;
   IncomingMessage? _replyMsg;
   final _replyController = TextEditingController();
   final _replyFocus = FocusNode();
+
+  /// Réponse vocale (long press)
+  bool _isVoiceRecording = false;
+  bool _isVoiceTranscribing = false;
+  int _voiceReplyIndex = -1;
+  IncomingMessage? _voiceReplyMsg;
+  String? _voiceReplyText;
 
   @override
   void dispose() {
@@ -2029,7 +2055,7 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
         children: [
           // Drag handle
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
+            padding: const EdgeInsets.symmetric(vertical: 6),
             child: Container(
               width: 36,
               height: 4,
@@ -2039,15 +2065,16 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
               ),
             ),
           ),
-          // Header
+          // Header compact
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.only(left: 16, right: 6, bottom: 2),
             child: Row(
               children: [
                 const Text('Messages', style: AppTextStyles.heading),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline, size: 20, color: AppColors.textSecondary),
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.delete_outline, size: 18, color: AppColors.textSecondary),
                   tooltip: 'Tout effacer',
                   onPressed: () {
                     widget.aggregator.clearAll();
@@ -2126,7 +2153,14 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
                       onDismissed: (direction) {
                         _removeMessage(msg.id);
                       },
-                      child: _buildMessageTile(msg),
+                      child: _voiceReplyIndex == index
+                          ? _buildVoiceMessageTile(msg, index)
+                          : GestureDetector(
+                              onTap: () => _openInSourceApp(msg),
+                              onLongPressStart: (_) => _startVoiceReply(msg, index),
+                              onLongPressEnd: (_) => _stopVoiceReply(),
+                              child: _buildMessageTile(msg),
+                            ),
                     );
                   },
                 );
@@ -2231,9 +2265,14 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
                 ),
                 GestureDetector(
                   onTap: () => _sendReply(msg, _replyController.text),
-                  child: const Padding(
-                    padding: EdgeInsets.only(right: 10),
-                    child: Icon(Icons.send, size: 20, color: AppColors.accent),
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 6),
+                    width: 32, height: 32,
+                    decoration: const BoxDecoration(
+                      color: AppColors.accent,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.arrow_upward_rounded, size: 18, color: Colors.white),
                   ),
                 ),
               ],
@@ -2327,8 +2366,264 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
     );
   }
 
+  // =========================================================================
+  // RÉPONSE VOCALE (long press)
+  // =========================================================================
+
+  Future<void> _startVoiceReply(IncomingMessage msg, int index) async {
+    // Annuler une éventuelle réponse clavier en cours
+    if (_replyMsg != null) {
+      setState(() { _replyIndex = -1; _replyMsg = null; _replyController.clear(); });
+    }
+    setState(() {
+      _voiceReplyIndex = index;
+      _voiceReplyMsg = msg;
+      _isVoiceRecording = true;
+      _isVoiceTranscribing = false;
+      _voiceReplyText = null;
+    });
+    HapticFeedback.mediumImpact();
+    final audioService = AudioService();
+    await audioService.startRecording();
+  }
+
+  Future<void> _stopVoiceReply() async {
+    if (!_isVoiceRecording) return;
+    setState(() {
+      _isVoiceRecording = false;
+      _isVoiceTranscribing = true;
+    });
+
+    try {
+      final audioService = AudioService();
+      final filePath = await audioService.stopRecordingRaw();
+      if (filePath == null) {
+        setState(() { _voiceReplyIndex = -1; _voiceReplyMsg = null; _isVoiceTranscribing = false; });
+        return;
+      }
+
+      final file = File(filePath);
+      final wavData = await file.readAsBytes();
+
+      // Silence check
+      if (audioService.isWavSilent(wavData)) {
+        try { await file.delete(); } catch (_) {}
+        setState(() { _voiceReplyIndex = -1; _voiceReplyMsg = null; _isVoiceTranscribing = false; });
+        return;
+      }
+
+      // Transcription Groq Whisper
+      final transcription = TranscriptionService();
+      final result = await transcription.transcribeBytes(
+        wavData,
+        language: SettingsService().language,
+      );
+      try { await file.delete(); } catch (_) {}
+
+      final text = result.text.trim();
+      if (text.isEmpty) {
+        setState(() { _voiceReplyIndex = -1; _voiceReplyMsg = null; _isVoiceTranscribing = false; });
+        return;
+      }
+
+      setState(() {
+        _isVoiceTranscribing = false;
+        _voiceReplyText = text;
+      });
+    } catch (e) {
+      // ignore: avoid_print
+      print('[VoiceReply] Erreur: $e');
+      setState(() { _voiceReplyIndex = -1; _voiceReplyMsg = null; _isVoiceTranscribing = false; });
+    }
+  }
+
+  /// Ouvre l'app source du message (WhatsApp, Telegram, SMS, etc.)
+  void _openInSourceApp(IncomingMessage msg) {
+    try {
+      final package = msg.appPackage;
+
+      // SMS : ouvrir la conversation avec le contact
+      if (package.contains('messaging') || package.contains('mms') || package.contains('samsung')) {
+        final intent = AndroidIntent(
+          action: 'android.intent.action.VIEW',
+          data: 'sms:',
+          package: package,
+          flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+        );
+        intent.launch();
+        return;
+      }
+
+      // Autres apps : ouvrir l'app (WhatsApp, Telegram, etc.)
+      final intent = AndroidIntent(
+        action: 'android.intent.action.MAIN',
+        package: package,
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+      );
+      intent.launch();
+    } catch (e) {
+      // ignore: avoid_print
+      print('[Messages] Impossible d\'ouvrir ${msg.appPackage}: $e');
+    }
+  }
+
+  void _cancelVoiceReply() {
+    setState(() {
+      _voiceReplyIndex = -1;
+      _voiceReplyMsg = null;
+      _voiceReplyText = null;
+      _isVoiceRecording = false;
+      _isVoiceTranscribing = false;
+    });
+  }
+
+  bool _isSending = false;
+
+  Future<void> _sendVoiceReply() async {
+    if (_voiceReplyMsg == null || _voiceReplyText == null || _isSending) return;
+    _isSending = true;
+    await _sendReply(_voiceReplyMsg!, _voiceReplyText!);
+    _cancelVoiceReply();
+    _isSending = false;
+  }
+
+  /// Message tile en mode vocal (long press actif ou texte transcrit)
+  /// Isolé du reste du ListView pour limiter les rebuilds
+  Widget _buildVoiceMessageTile(IncomingMessage msg, int index) {
+    final isActive = _isVoiceRecording || _isVoiceTranscribing;
+    final appColor = _appColors[msg.appSource] ?? AppColors.textSecondary;
+
+    return GestureDetector(
+      onTap: () => _openInSourceApp(msg),
+      onLongPressStart: (_) => _startVoiceReply(msg, index),
+      onLongPressEnd: (_) => _stopVoiceReply(),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Message tile avec fond vert subtil pendant enregistrement/transcription
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: isActive
+                  ? AppColors.accent.withValues(alpha: 0.06)
+                  : AppColors.background,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isActive
+                    ? AppColors.accent.withValues(alpha: 0.3)
+                    : AppColors.border.withValues(alpha: 0.5),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 3, height: 36,
+                  margin: const EdgeInsets.only(right: 10),
+                  decoration: BoxDecoration(
+                    color: appColor,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(msg.senderName,
+                              style: AppTextStyles.cardTitle.copyWith(fontSize: 14),
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(msg.appSource, style: TextStyle(
+                            fontSize: 10, color: appColor, fontWeight: FontWeight.w600)),
+                          const SizedBox(width: 6),
+                          // Indicateur d'activité intégré (remplace l'heure pendant l'enregistrement)
+                          if (isActive)
+                            SizedBox(width: 12, height: 12,
+                              child: CircularProgressIndicator(strokeWidth: 1.5,
+                                valueColor: AlwaysStoppedAnimation<Color>(AppColors.accent)))
+                          else
+                            Text(_formatTime(msg.receivedAt),
+                              style: AppTextStyles.metadata.copyWith(fontSize: 11)),
+                        ],
+                      ),
+                      if (msg.messagePreview.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(msg.messagePreview,
+                          style: AppTextStyles.cardBody.copyWith(fontSize: 13),
+                          maxLines: 2, overflow: TextOverflow.ellipsis),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Bulle de réponse vocale (sous le message)
+          if (_voiceReplyText != null)
+            _buildVoiceReplyBubble(msg),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoiceReplyBubble(IncomingMessage msg) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 4, 12, 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.accent.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.accent.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                _voiceReplyText!,
+                style: AppTextStyles.cardBody.copyWith(
+                  fontSize: 13,
+                  fontStyle: FontStyle.italic,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _cancelVoiceReply,
+              child: const Icon(Icons.close, size: 18, color: AppColors.textSecondary),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _sendVoiceReply,
+              child: Container(
+                width: 32, height: 32,
+                decoration: const BoxDecoration(
+                  color: AppColors.accent,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.arrow_upward_rounded, size: 18, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================================
+  // RÉPONSE CLAVIER (swipe)
+  // =========================================================================
+
   Future<void> _sendReply(IncomingMessage msg, String text) async {
-    if (text.trim().isEmpty) return;
+    if (text.trim().isEmpty || _isSending) return;
+    _isSending = true;
 
     final trimmed = text.trim();
     final senderName = msg.senderName;
@@ -2356,6 +2651,7 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
     );
+    _isSending = false;
   }
 
   void _removeMessage(String id) {
@@ -2803,6 +3099,140 @@ class _FintectureSheetContentState extends State<_FintectureSheetContent> {
               foregroundColor: Colors.white,
             ),
             child: const Text('Envoyer'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// =============================================================================
+/// Debug Console Panel (affichée en bas de l'écran quand activée)
+/// =============================================================================
+
+class _DebugConsolePanel extends StatefulWidget {
+  const _DebugConsolePanel();
+
+  @override
+  State<_DebugConsolePanel> createState() => _DebugConsolePanelState();
+}
+
+class _DebugConsolePanelState extends State<_DebugConsolePanel> {
+  final _debug = DebugConsoleService();
+  final _scrollController = ScrollController();
+  bool _autoScroll = true;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    if (_autoScroll && _scrollController.hasClients) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 180,
+      decoration: const BoxDecoration(
+        color: Color(0xFF0A0A0A),
+        border: Border(top: BorderSide(color: Color(0xFF333333), width: 0.5)),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            color: const Color(0xFF1A1A1A),
+            child: Row(
+              children: [
+                const Icon(Icons.terminal, size: 14, color: Color(0xFF00FF88)),
+                const SizedBox(width: 6),
+                const Text('Console',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      color: Color(0xFF00FF88),
+                      fontWeight: FontWeight.bold,
+                    )),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () => setState(() => _autoScroll = !_autoScroll),
+                  child: Icon(
+                    _autoScroll ? Icons.vertical_align_bottom : Icons.pause,
+                    size: 14,
+                    color: _autoScroll ? const Color(0xFF00FF88) : Colors.orange,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                GestureDetector(
+                  onTap: () {
+                    _debug.clear();
+                    setState(() {});
+                  },
+                  child: const Icon(Icons.delete_outline, size: 14, color: Color(0xFF666666)),
+                ),
+              ],
+            ),
+          ),
+          // Log lines
+          Expanded(
+            child: StreamBuilder<List<DebugLogEntry>>(
+              stream: _debug.stream,
+              initialData: _debug.logs,
+              builder: (context, snapshot) {
+                final logs = snapshot.data ?? [];
+                _scrollToBottom();
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  itemCount: logs.length,
+                  itemBuilder: (context, index) {
+                    final entry = logs[index];
+                    final color = switch (entry.level) {
+                      'error' => Colors.red,
+                      'warning' => Colors.orange,
+                      _ => const Color(0xFFCCCCCC),
+                    };
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 0.5),
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: '${entry.timeStr} ',
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 9,
+                                color: Color(0xFF555555),
+                              ),
+                            ),
+                            TextSpan(
+                              text: entry.message,
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 9,
+                                color: color,
+                              ),
+                            ),
+                          ],
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
           ),
         ],
       ),

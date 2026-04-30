@@ -13,6 +13,7 @@ import 'contact_history_service.dart';
 import 'validated_contacts_service.dart';
 import 'incoming_history_service.dart';
 import 'lock_screen_service.dart';
+import 'settings_service.dart';
 import 'contact_lookup_service.dart';
 
 /// =============================================================================
@@ -504,21 +505,25 @@ class LocalActionDispatcher {
     String displayName,
     MessageAction action,
   ) async {
-    String targetApp = 'sms';
-
     // Priorité 1 : Dernière app ENTRANTE
+    // Priorité 2 : Dernière app SORTANTE
+    // Priorité 3 : App préférée dans les paramètres
+    String targetApp = SettingsService().preferredMessaging;
+
     final incomingApp = await IncomingHistoryService.getLastIncomingApp(displayName);
     if (incomingApp != null) {
       targetApp = incomingApp;
       // ignore: avoid_print
       print('[Dispatcher] App entrante: $targetApp');
     } else {
-      // Priorité 2 : Dernière app SORTANTE
       final history = await _contactHistoryService.findByName(action.recipient);
       if (history.found && history.suggestedApp != null) {
         targetApp = history.suggestedApp!;
         // ignore: avoid_print
         print('[Dispatcher] App sortante: $targetApp');
+      } else {
+        // ignore: avoid_print
+        print('[Dispatcher] App préférée: $targetApp');
       }
     }
 

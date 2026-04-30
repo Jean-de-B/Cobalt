@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import '../models/ai_action.dart';
 import 'local_spotify_service.dart';
+import 'settings_service.dart';
 
 /// =============================================================================
 /// local_media_service.dart
@@ -62,8 +63,9 @@ class LocalMediaService {
       // ignore: avoid_print
       print('[Media] spotifyService.isConnected=${_spotifyService.isConnected} (hashCode=${_spotifyService.hashCode})');
 
-      // Si Spotify est connecté, tenter via l'API Web (pas d'écran nécessaire)
-      if (_spotifyService.isConnected) {
+      // Si le service choisi est Spotify ET qu'il est connecté, utiliser l'API Web
+      final preferredMusic = SettingsService().musicService;
+      if (preferredMusic == 'spotify' && _spotifyService.isConnected) {
         // ignore: avoid_print
         print('[Media] >>> Routage vers Spotify Web API <<<');
         final spotifyResult = await _trySpotifyCommand(controlType, query, app);
@@ -205,26 +207,36 @@ class LocalMediaService {
     return null;
   }
 
+  /// Mapping service préféré → package Android
+  static const Map<String, String> _musicPackages = {
+    'spotify': 'com.spotify.music',
+    'deezer': 'deezer.android.app',
+    'youtube_music': 'com.google.android.apps.youtube.music',
+  };
+
   /// Recherche et lance la lecture via ACTION_MEDIA_PLAY_FROM_SEARCH
   Future<MediaResult> _playSearch(String query, String? app) async {
+    // Résoudre l'app cible : paramètre explicite > service préféré
+    final targetApp = app ?? SettingsService().musicService;
     // ignore: avoid_print
-    print('[Media] PlaySearch: "$query" sur ${app ?? "app par défaut"}');
+    print('[Media] PlaySearch: "$query" sur $targetApp');
 
-    // Essayer d'abord via Spotify Web API si l'app cible est Spotify
-    if (app?.toLowerCase() == 'spotify' && _spotifyService.isConnected) {
+    // Essayer via Spotify Web API si c'est le service choisi et connecté
+    if (targetApp == 'spotify' && _spotifyService.isConnected) {
       final spotifyResult = await _spotifyService.searchAndPlay(query);
       if (spotifyResult.success) {
         return MediaResult.success();
       }
       // ignore: avoid_print
-      print('[Media] Spotify Web API échoué: ${spotifyResult.error}, fallback MediaKey');
+      print('[Media] Spotify Web API échoué: ${spotifyResult.error}, fallback intent');
     }
 
-    // Méthode standard (intents Android)
+    // Intent Android ACTION_MEDIA_PLAY_FROM_SEARCH avec le bon package
+    final targetPackage = _musicPackages[targetApp];
     try {
       final result = await _channel.invokeMethod<bool>('playSearch', {
         'query': query,
-        'app': app,
+        'app': targetPackage,
       });
 
       if (result == true) {

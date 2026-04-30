@@ -8,8 +8,10 @@ import 'services/database_service.dart';
 import 'services/foreground_service.dart';
 import 'services/audio_feedback_service.dart';
 import 'services/sherpa_transcription_service.dart';
+import 'dart:async';
 import 'services/hardware_button_service.dart';
 import 'services/settings_service.dart';
+import 'services/debug_console_service.dart';
 
 /// =============================================================================
 /// main.dart
@@ -29,6 +31,28 @@ import 'services/settings_service.dart';
 Future<void> main() async {
   // Assurer l'initialisation des bindings Flutter
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Intercepter tous les print() pour la console debug intégrée
+  final debugConsole = DebugConsoleService();
+  runZoned(
+    () => _appMain(),
+    zoneSpecification: ZoneSpecification(
+      print: (self, parent, zone, line) {
+        // Toujours envoyer au print original (logcat)
+        parent.print(zone, line);
+        // Capturer dans la console debug
+        final level = line.contains('ERREUR') || line.contains('Error') || line.contains('error')
+            ? 'error'
+            : line.contains('WARN') || line.contains('Warn')
+                ? 'warning'
+                : 'info';
+        debugConsole.log(line, level: level);
+      },
+    ),
+  );
+}
+
+Future<void> _appMain() async {
 
   // Configurer l'orientation (portrait uniquement)
   await SystemChrome.setPreferredOrientations([

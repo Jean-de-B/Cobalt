@@ -188,15 +188,33 @@ class BleStatusIndicator extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  // Déconnecter
+                  const SizedBox(width: 8),
+                  // Oublier la montre
                   GestureDetector(
                     onTap: () {
                       Navigator.pop(sheetContext);
                       audioService.stopBrowseScan();
                       audioService.disconnectBle();
                     },
-                    child: const Icon(Icons.logout, color: Colors.red, size: 18),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.link_off, size: 14, color: Colors.red),
+                          SizedBox(width: 4),
+                          Text('Oublier', style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.red,
+                          )),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),

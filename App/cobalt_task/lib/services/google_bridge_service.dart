@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'ai_sorter_service.dart';
+import 'settings_service.dart';
 import 'google_auth_service.dart';
 import 'google_tasks_service.dart';
 import 'google_calendar_service.dart';
@@ -172,6 +174,18 @@ class GoogleBridgeService {
   ///
   /// Route automatiquement vers le bon service selon la catégorie.
   /// Retourne l'ID Google de l'élément créé ou null en cas d'erreur.
+  /// Ouvre Samsung Notes avec le contenu pré-rempli (intent)
+  Future<void> _openSamsungNotes(String title, String? content) async {
+    try {
+      final text = content != null ? '$title\n\n$content' : title;
+      const channel = MethodChannel('com.cobalt_task/media_keys');
+      await channel.invokeMethod('openSamsungNotes', {'text': text});
+    } catch (e) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: Erreur Samsung Notes: $e');
+    }
+  }
+
   Future<String?> syncFiche({
     required NoteCategory category,
     required String title,
@@ -238,11 +252,16 @@ class GoogleBridgeService {
           break;
 
         case NoteCategory.memo:
-          googleId = await _tasksService.addMemo(
-            title: title,
-            content: content,
-            sentiment: sentiment,
-          );
+          final notesTarget = SettingsService().notesService;
+          if (notesTarget == 'samsung') {
+            await _openSamsungNotes(title, content);
+          } else {
+            googleId = await _tasksService.addMemo(
+              title: title,
+              content: content,
+              sentiment: sentiment,
+            );
+          }
           break;
       }
     } catch (e) {

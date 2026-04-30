@@ -10,7 +10,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 /// Service de premier plan pour maintenir l'application active en arrière-plan.
 ///
 /// Fonctionnalités:
-/// - Notification persistante "Cobalt Task - En écoute" avec bouton micro
+/// - Notification persistante "Cobalt Task" avec bouton micro
 /// - Maintien du CPU actif pendant les opérations critiques
 /// - Communication avec l'UI via SendPort/ReceivePort + MethodChannel natif
 ///
