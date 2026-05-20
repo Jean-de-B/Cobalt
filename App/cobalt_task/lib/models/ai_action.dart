@@ -570,7 +570,7 @@ final class MediaAction extends AiAction {
   String toString() => 'MediaAction(controlType: $controlType, query: $query, app: $app)';
 }
 
-/// Action paiement - Demande de remboursement via Fintecture
+/// Action paiement - Demande de remboursement
 final class PaymentAction extends AiAction {
   final String recipient;
   final double amount;

@@ -249,6 +249,16 @@ class CobaltForegroundService {
     });
   }
 
+  /// Envoie une notification système d'alerte batterie faible
+  Future<void> showBatteryAlert(int level) async {
+    try {
+      await _nativeNotifChannel.invokeMethod('showBatteryAlert', {'level': level});
+    } catch (e) {
+      // ignore: avoid_print
+      print('[ForegroundService] Erreur notification batterie: $e');
+    }
+  }
+
   /// Arrête le service de premier plan
   Future<void> stop() async {
     if (!_isRunning) return;

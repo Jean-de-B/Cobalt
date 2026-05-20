@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/fiche.dart';
-import '../models/fintecture_transaction.dart';
 import '../models/incoming_message.dart';
 import '../models/voice_note.dart';
 
@@ -41,9 +40,6 @@ class DatabaseService {
 
   /// Version du schéma (pour migrations futures)
   static const int _databaseVersion = 12;
-
-  /// Nom de la table Fintecture
-  static const String _tableFintecture = 'fintecture_transactions';
 
   /// Nom de la table des messages entrants
   static const String _tableMessages = 'incoming_messages';
@@ -221,22 +217,6 @@ class DatabaseService {
       )
     ''');
 
-    // Table Fintecture transactions
-    await db.execute('''
-      CREATE TABLE $_tableFintecture (
-        id TEXT PRIMARY KEY,
-        recipient_name TEXT NOT NULL,
-        recipient_phone TEXT NOT NULL DEFAULT '',
-        amount REAL NOT NULL,
-        currency TEXT NOT NULL DEFAULT 'EUR',
-        note TEXT DEFAULT '',
-        payment_url TEXT DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at INTEGER NOT NULL,
-        paid_at INTEGER
-      )
-    ''');
-
     await db.execute('''
       CREATE TABLE $_tableMessages (
         id TEXT PRIMARY KEY,
@@ -392,24 +372,6 @@ class DatabaseService {
       await db.execute(
         'ALTER TABLE $_tableVoiceNotes ADD COLUMN action_json TEXT',
       );
-    }
-
-    // Migration v9 → v10/v11 : table Fintecture transactions
-    if (oldVersion < 11) {
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS $_tableFintecture (
-          id TEXT PRIMARY KEY,
-          recipient_name TEXT NOT NULL,
-          recipient_phone TEXT NOT NULL DEFAULT '',
-          amount REAL NOT NULL,
-          currency TEXT NOT NULL DEFAULT 'EUR',
-          note TEXT DEFAULT '',
-          payment_url TEXT DEFAULT '',
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at INTEGER NOT NULL,
-          paid_at INTEGER
-        )
-      ''');
     }
 
     // Migration v11 → v12 : table messages entrants
@@ -848,55 +810,6 @@ class DatabaseService {
   /// Force une notification des fiches
   Future<void> refreshFichesStream() async {
     await _notifyFichesListeners();
-  }
-
-  // ---------------------------------------------------------------------------
-  // OPÉRATIONS CRUD — Fintecture Transactions
-  // ---------------------------------------------------------------------------
-
-  Future<void> insertFintectureTransaction(FintectureTransaction tx) async {
-    final db = await database;
-    await db.insert(
-      _tableFintecture,
-      tx.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<void> updateFintectureTransactionStatus(
-    String id,
-    FintectureStatus status, {
-    DateTime? paidAt,
-  }) async {
-    final db = await database;
-    final values = <String, dynamic>{'status': status.name};
-    if (paidAt != null) {
-      values['paid_at'] = paidAt.millisecondsSinceEpoch;
-    }
-    await db.update(
-      _tableFintecture,
-      values,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<List<FintectureTransaction>> getFintectureTransactions() async {
-    final db = await database;
-    final maps = await db.query(
-      _tableFintecture,
-      orderBy: 'created_at DESC',
-    );
-    return maps.map((m) => FintectureTransaction.fromMap(m)).toList();
-  }
-
-  Future<void> deleteFintectureTransaction(String id) async {
-    final db = await database;
-    await db.delete(
-      _tableFintecture,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
   }
 
   // ---------------------------------------------------------------------------

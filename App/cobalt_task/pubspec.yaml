@@ -64,13 +64,6 @@ dependencies:
   # Accès aux contacts (recherche de destinataires SMS/Appels)
   flutter_contacts: ^1.1.7+1
 
-  # Stockage sécurisé (credentials Fintecture IBAN)
-  flutter_secure_storage: ^9.2.4
-
-  # Crypto RSA pour signature Fintecture
-  pointycastle: ^3.9.1
-  asn1lib: ^1.5.8
-
   # UUID pour identifiants de transaction
   uuid: ^4.5.1
 

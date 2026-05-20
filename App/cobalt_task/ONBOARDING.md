@@ -237,11 +237,6 @@ SPOTIFY_CLIENT_ID=...
 GOOGLE_MAPS_API_KEY=...
 GEMINI_API_KEY=...
 
-# OPTIONNEL - Paiement Open Banking
-FINTECTURE_ENV=sandbox
-FINTECTURE_APP_ID=...
-FINTECTURE_APP_SECRET=...
-FINTECTURE_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----
 ```
 
 ---
@@ -278,10 +273,6 @@ FINTECTURE_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVAT
 ### Systeme
 - "Allume la lampe"
 - "Ouvre Instagram"
-
-### Paiement (si Fintecture configure)
-- "Rembourse 20 euros a Paul"
-- "Paye 30 euros a Julie pour le resto"
 
 ---
 

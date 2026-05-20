@@ -341,7 +341,7 @@ class _MemoCardState extends State<MemoCard> {
     );
   }
 
-  /// Paiement Fintecture : destinataire, montant, note
+  /// Paiement : destinataire, montant, note
   Widget _buildPaymentDetails(
     Map<String, dynamic> params,
     Map<String, dynamic> resolved,

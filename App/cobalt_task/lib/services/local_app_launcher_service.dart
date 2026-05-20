@@ -118,7 +118,6 @@ class LocalAppLauncherService {
     'waze': 'com.waze',
 
     // Finance
-    // Finance (supprimé — Fintecture utilise le web, pas d'app native)
 
     // Jeux
     'play games': 'com.google.android.play.games',

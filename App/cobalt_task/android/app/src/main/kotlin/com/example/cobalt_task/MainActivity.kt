@@ -61,7 +61,6 @@ class MainActivity : FlutterActivity() {
     private var customNotifChannel: MethodChannel? = null
     private var assistantDiagChannel: MethodChannel? = null
     private var cobaltOverlayChannel: MethodChannel? = null
-    private var fintectureChannel: MethodChannel? = null
     private var micButtonReceiver: BroadcastReceiver? = null
     private var notificationReceiver: BroadcastReceiver? = null
     private var notificationEventSink: EventChannel.EventSink? = null
@@ -312,6 +311,11 @@ class MainActivity : FlutterActivity() {
                     showMicNotification(title, text, isRecording)
                     result.success(true)
                 }
+                "showBatteryAlert" -> {
+                    val level = call.argument<Int>("level") ?: 0
+                    showBatteryAlert(level)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -391,9 +395,6 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
-
-        // Canal Fintecture (deep link callback)
-        fintectureChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.cobalt_task/fintecture")
 
         // EventChannel pour streamer les notifications en temps réel vers Flutter
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, "com.cobalt_task/notification_stream")
@@ -553,14 +554,6 @@ class MainActivity : FlutterActivity() {
                     spotifyAuthChannel?.invokeMethod("onAuthError", mapOf("error" to error))
                 }
             }
-            // Fintecture payment callback
-            if (uri.scheme == "cobalt" && uri.host == "fintecture") {
-                Log.d(TAG, "Fintecture callback: $uri")
-                fintectureChannel?.invokeMethod("onPaymentCallback", mapOf(
-                    "state" to (uri.getQueryParameter("state") ?: ""),
-                    "status" to (uri.getQueryParameter("status") ?: "")
-                ))
-            }
         }
 
         // Lancement en mode assistant (via AssistantActivity trampoline)
@@ -673,6 +666,58 @@ class MainActivity : FlutterActivity() {
             nm.notify(notificationId, builder.build())
         } else {
             Log.d(TAG, "showMicNotification: pre-O device, skipping custom notification")
+        }
+    }
+
+    // =========================================================================
+    // ALERTE BATTERIE FAIBLE
+    // =========================================================================
+
+    /**
+     * Poste une notification pop-up (heads-up) quand la batterie de la montre
+     * passe sous 10 %. Canal HIGH importance pour garantir l'affichage en banniere.
+     */
+    private fun showBatteryAlert(level: Int) {
+        Log.d(TAG, "showBatteryAlert: level=$level%")
+
+        val channelId = "cobalt_battery_alert"
+        val notificationId = 1002
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (nm.getNotificationChannel(channelId) == null) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Alertes Cobalt Task",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Alertes importantes (batterie faible, etc.)"
+                    enableVibration(true)
+                }
+                nm.createNotificationChannel(channel)
+            }
+
+            val contentIntent = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                },
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val iconResId = resources.getIdentifier("ic_notification", "drawable", packageName)
+            val smallIcon = if (iconResId != 0) iconResId else android.R.drawable.ic_dialog_alert
+
+            val notification = Notification.Builder(this, channelId)
+                .setSmallIcon(smallIcon)
+                .setContentTitle("Batterie faible")
+                .setContentText("Batterie de la montre : $level% — pensez à recharger")
+                .setContentIntent(contentIntent)
+                .setAutoCancel(true)
+                .build()
+
+            nm.notify(notificationId, notification)
         }
     }
 

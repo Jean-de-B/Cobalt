@@ -117,13 +117,6 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="cobalttask" android:host="spotify-callback"/>
             </intent-filter>
-            <!-- Fintecture Payment Callback (deep link) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="cobalt" android:host="fintecture" android:pathPrefix="/callback"/>
-            </intent-filter>
         </activity>
 
         <!-- AssistantActivity: intercepte ASSIST (assistant vocal par defaut) -->
@@ -279,7 +272,6 @@
         <package android:name="org.telegram.messenger"/>
         <package android:name="org.thoughtcrime.securesms"/>
         <package android:name="com.facebook.orca"/>
-        <!-- Payment (Fintecture — no package query needed, uses web) -->
         <!-- Music Apps -->
         <package android:name="com.spotify.music"/>
         <package android:name="com.google.android.apps.youtube.music"/>

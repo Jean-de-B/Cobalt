@@ -26,8 +26,6 @@ import '../services/assistant_launch_service.dart';
 import '../services/cobalt_overlay_service.dart';
 import '../services/foreground_service.dart';
 import '../services/message_aggregator_service.dart';
-import '../services/fintecture_service.dart';
-import '../models/fintecture_transaction.dart';
 import '../services/local_sms_service.dart';
 import 'settings_screen.dart';
 import '../services/settings_service.dart';
@@ -60,21 +58,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AudioFeedbackService _audioFeedback = AudioFeedbackService();
   final AssistantLaunchService _assistantLaunchService = AssistantLaunchService();
   final CobaltOverlayService _overlayService = CobaltOverlayService();
-  final FintectureService _fintectureService = FintectureService();
   final MessageAggregatorService _messageAggregator = MessageAggregatorService();
   StreamSubscription<PendingValidation>? _pendingValidationSub;
   StreamSubscription<String>? _assistLaunchSub;
   StreamSubscription<bool>? _micButtonSub;
   StreamSubscription<bool>? _assistRecordSub;
   StreamSubscription<void>? _overlayDismissSub;
+  StreamSubscription<int>? _batteryLevelSub;
   bool _isShowingValidationDialog = false;
+  bool _lowBatteryNotified = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _databaseService.refreshStream();
-    _fintectureService.initialize();
     _checkOverlayPermission();
     // Vérifier accessibilité et permission notifications après le premier frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -116,6 +114,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _overlayDismissSub = _overlayService.overlayDismissStream.listen((_) {
       // ignore: avoid_print
       print('[HomeScreen] Overlay dismiss');
+    });
+
+    // Alerte batterie faible (<= 10 %)
+    _batteryLevelSub = _audioService.batteryLevelStream.listen((level) {
+      if (level > 0 && level <= 10 && !_lowBatteryNotified) {
+        _lowBatteryNotified = true;
+        CobaltForegroundService().showBatteryAlert(level);
+        final msg = SettingsService().language == 'en'
+            ? 'Watch battery low: $level percent. Please charge.'
+            : 'Batterie de la montre faible : $level pourcent. Pensez à recharger.';
+        _audioFeedback.speak(msg);
+      } else if (level > 20) {
+        _lowBatteryNotified = false;
+      }
     });
   }
 
@@ -361,6 +373,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _micButtonSub?.cancel();
     _assistRecordSub?.cancel();
     _overlayDismissSub?.cancel();
+    _batteryLevelSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -653,7 +666,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             actions: [
               _buildTransferIndicator(),
               _buildMessagesIndicator(),
-              _buildFintectureIndicator(),
               _buildSpotifyIndicator(),
               _buildGoogleIndicator(),
               _buildBatteryIndicator(),
@@ -721,62 +733,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               scrollController: scrollController,
               aggregator: _messageAggregator,
               draggableController: draggableController,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFintectureIndicator() {
-    return StreamBuilder<bool>(
-      stream: _fintectureService.configuredStream,
-      initialData: false,
-      builder: (context, snapshot) {
-        return Tooltip(
-          message: 'Paiements',
-          child: InkWell(
-            onTap: () => _showFintectureMenu(context),
-            borderRadius: BorderRadius.circular(20),
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: FutureBuilder<bool>(
-                future: _fintectureService.hasIban(),
-                builder: (context, ibanSnap) {
-                  final hasIban = ibanSnap.data ?? false;
-                  return Icon(
-                    Icons.attach_money,
-                    color: hasIban
-                        ? const Color(0xFF00C471)
-                        : AppColors.textSecondary,
-                    size: 22,
-                  );
-                },
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _showFintectureMenu(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (sheetContext) => GestureDetector(
-        onTap: () => Navigator.pop(sheetContext),
-        behavior: HitTestBehavior.opaque,
-        child: GestureDetector(
-          onTap: () {},
-          child: DraggableScrollableSheet(
-            initialChildSize: 0.5,
-            minChildSize: 0.3,
-            maxChildSize: 0.92,
-            builder: (context, scrollController) => _FintectureSheetContent(
-              scrollController: scrollController,
-              fintectureService: _fintectureService,
             ),
           ),
         ),
@@ -1003,7 +959,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Color color;
             if (charging) {
               color = Colors.green;
-            } else if (level <= 15) {
+            } else if (level <= 10) {
               color = Colors.red;
             } else if (level <= 30) {
               color = Colors.orange;
@@ -2680,433 +2636,6 @@ class _MessagesSheetContentState extends State<_MessagesSheetContent> {
       return 'hier';
     }
     return '${dt.day}/${dt.month}';
-  }
-}
-
-/// =============================================================================
-/// Fintecture Sheet Content (bottom sheet draggable)
-/// =============================================================================
-
-class _FintectureSheetContent extends StatefulWidget {
-  final ScrollController scrollController;
-  final FintectureService fintectureService;
-
-  const _FintectureSheetContent({
-    required this.scrollController,
-    required this.fintectureService,
-  });
-
-  @override
-  State<_FintectureSheetContent> createState() => _FintectureSheetContentState();
-}
-
-class _FintectureSheetContentState extends State<_FintectureSheetContent> {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      child: Column(
-        children: [
-          // Drag handle
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.textTertiary.withValues(alpha: 0.4),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          // Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Text('Paiements', style: AppTextStyles.heading),
-                const Spacer(),
-                // Config IBAN
-                IconButton(
-                  icon: const Icon(Icons.account_balance, size: 20, color: AppColors.textSecondary),
-                  tooltip: 'Configurer IBAN',
-                  onPressed: () => _showIbanDialog(context),
-                ),
-                // Nouvelle demande manuelle
-                IconButton(
-                  icon: const Icon(Icons.add, size: 22, color: AppColors.accent),
-                  tooltip: 'Nouvelle demande',
-                  onPressed: () => _showNewRequestDialog(context),
-                ),
-              ],
-            ),
-          ),
-          // IBAN status
-          FutureBuilder<bool>(
-            future: widget.fintectureService.hasIban(),
-            builder: (context, snap) {
-              if (snap.data == true) {
-                return FutureBuilder<String>(
-                  future: widget.fintectureService.getMaskedIban(),
-                  builder: (context, ibanSnap) => Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.check_circle, size: 14, color: AppColors.accent),
-                        const SizedBox(width: 6),
-                        Text(
-                          'IBAN ${ibanSnap.data ?? ''}',
-                          style: AppTextStyles.metadata.copyWith(color: AppColors.accent),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }
-              return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning_amber, size: 14, color: Colors.orange),
-                    const SizedBox(width: 6),
-                    Text(
-                      'IBAN non configuré',
-                      style: AppTextStyles.metadata.copyWith(color: Colors.orange),
-                    ),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: () => _showIbanDialog(context),
-                      child: Text(
-                        'Configurer',
-                        style: AppTextStyles.metadata.copyWith(
-                          color: AppColors.accent,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-          const Divider(color: AppColors.border, height: 1),
-          // Transactions list
-          Expanded(
-            child: StreamBuilder<List<FintectureTransaction>>(
-              stream: widget.fintectureService.transactionsStream,
-              initialData: widget.fintectureService.transactions,
-              builder: (context, snapshot) {
-                final txs = snapshot.data ?? [];
-
-                if (txs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.account_balance_wallet_outlined, size: 48, color: AppColors.textTertiary),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Aucune demande de remboursement',
-                          style: AppTextStyles.metadata,
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  controller: widget.scrollController,
-                  padding: const EdgeInsets.only(top: 4, bottom: 16),
-                  itemCount: txs.length,
-                  itemBuilder: (context, index) {
-                    final tx = txs[index];
-                    final isDone = tx.status != FintectureStatus.pending;
-
-                    return Dismissible(
-                      key: ValueKey(tx.id),
-                      direction: isDone ? DismissDirection.endToStart : DismissDirection.none,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 20),
-                        color: Colors.red.withValues(alpha: 0.12),
-                        child: const Icon(Icons.delete_outline, color: Colors.red),
-                      ),
-                      onDismissed: (_) => widget.fintectureService.deleteTransaction(tx.id),
-                      child: _buildTransactionTile(tx),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTransactionTile(FintectureTransaction tx) {
-    Color statusColor;
-    String statusLabel;
-    switch (tx.status) {
-      case FintectureStatus.pending:
-        statusColor = Colors.orange;
-        statusLabel = 'En attente';
-      case FintectureStatus.paid:
-        statusColor = AppColors.accent;
-        statusLabel = 'Payé';
-      case FintectureStatus.expired:
-        statusColor = Colors.red;
-        statusLabel = 'Expiré';
-      case FintectureStatus.failed:
-        statusColor = Colors.red;
-        statusLabel = 'Échoué';
-    }
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border.withValues(alpha: 0.5)),
-      ),
-      child: Row(
-        children: [
-          // Status dot
-          Container(
-            width: 8,
-            height: 8,
-            margin: const EdgeInsets.only(right: 10),
-            decoration: BoxDecoration(
-              color: statusColor,
-              shape: BoxShape.circle,
-            ),
-          ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        tx.recipientName,
-                        style: AppTextStyles.cardTitle.copyWith(fontSize: 14),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Text(
-                      tx.formattedAmount,
-                      style: AppTextStyles.cardTitle.copyWith(
-                        fontSize: 15,
-                        color: statusColor,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 3),
-                Row(
-                  children: [
-                    Text(
-                      statusLabel,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: statusColor,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    if (tx.note.isNotEmpty) ...[
-                      Text(
-                        ' · ${tx.note}',
-                        style: AppTextStyles.metadata.copyWith(fontSize: 11),
-                      ),
-                    ],
-                    const Spacer(),
-                    Text(
-                      _formatTxDate(tx),
-                      style: AppTextStyles.metadata.copyWith(fontSize: 11),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatTxDate(FintectureTransaction tx) {
-    final dt = tx.paidAt ?? tx.createdAt;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final txDay = DateTime(dt.year, dt.month, dt.day);
-
-    if (txDay == today) {
-      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    }
-    if (txDay == today.subtract(const Duration(days: 1))) {
-      return 'hier';
-    }
-    return '${dt.day}/${dt.month}';
-  }
-
-  void _showIbanDialog(BuildContext context) {
-    final ibanController = TextEditingController();
-    final bicController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Configurer IBAN', style: AppTextStyles.heading),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Votre IBAN est stocké localement sur cet appareil uniquement.',
-              style: AppTextStyles.metadata,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: ibanController,
-              decoration: const InputDecoration(
-                labelText: 'IBAN',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.account_balance),
-                hintText: 'FR76 XXXX XXXX XXXX XXXX XXXX XXX',
-              ),
-              textCapitalization: TextCapitalization.characters,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: bicController,
-              decoration: const InputDecoration(
-                labelText: 'BIC (optionnel)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.code),
-              ),
-              textCapitalization: TextCapitalization.characters,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final messenger = ScaffoldMessenger.of(context);
-              final ok = await widget.fintectureService.setupUserIban(
-                ibanController.text,
-                bicController.text,
-              );
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
-
-              if (ok) {
-                messenger.showSnackBar(
-                  const SnackBar(
-                    content: Text('IBAN configuré'),
-                    backgroundColor: AppColors.accent,
-                  ),
-                );
-                setState(() {});
-              } else {
-                messenger.showSnackBar(
-                  const SnackBar(
-                    content: Text('IBAN invalide'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accent,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Enregistrer'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showNewRequestDialog(BuildContext context) {
-    final nameController = TextEditingController();
-    final amountController = TextEditingController();
-    final noteController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Demander un remboursement', style: AppTextStyles.heading),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Destinataire',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Montant (€)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.euro),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: noteController,
-              decoration: const InputDecoration(
-                labelText: 'Motif (optionnel)',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.notes),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Annuler'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final name = nameController.text.trim();
-              final amount = double.tryParse(amountController.text.trim());
-              if (name.isEmpty || amount == null || amount <= 0) return;
-
-              Navigator.pop(dialogContext);
-              await widget.fintectureService.createRequestToPay(
-                recipientName: name,
-                recipientPhone: '',
-                amount: amount,
-                note: noteController.text.trim(),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.accent,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Envoyer'),
-          ),
-        ],
-      ),
-    );
   }
 }
 
