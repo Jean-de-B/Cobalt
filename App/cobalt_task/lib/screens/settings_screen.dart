@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../constants/app_constants.dart';
 import '../services/settings_service.dart';
 import '../services/audio_service.dart';
@@ -202,11 +203,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 label: 'Spotify',
                 subtitle: connected ? 'Connecté' : 'Contrôle musical',
                 connected: connected,
-                onConnect: () => _audioService.connectSpotify(),
+                onConnect: () {
+                  if (_settings.spotifyClientId.isEmpty) {
+                    showSpotifySetup(context);
+                  } else {
+                    _audioService.connectSpotify();
+                  }
+                },
                 onDisconnect: () async {
                   await _audioService.disconnectSpotify();
                   setState(() {});
                 },
+              );
+            },
+          ),
+
+          const SizedBox(height: 24),
+
+          // === CLÉS API ===
+          _sectionTitle('Clés API'),
+
+          StreamBuilder<void>(
+            stream: _settings.onChanged,
+            builder: (context, _) {
+              final mapsConfigured = _settings.googleMapsApiKey.isNotEmpty;
+              final geminiConfigured = _settings.geminiApiKey.isNotEmpty;
+              final bothConfigured = mapsConfigured && geminiConfigured;
+              return _buildAccountRow(
+                icon: Icons.route,
+                color: const Color(0xFF34A853),
+                label: 'Briefing vocal navigation',
+                subtitle: bothConfigured
+                    ? '2 clés configurées'
+                    : mapsConfigured || geminiConfigured
+                        ? '1 clé manquante'
+                        : 'Optionnel — résumé du trajet avant Maps',
+                connected: bothConfigured,
+                onConnect: () => showNavigationApiSetup(context),
+                onDisconnect: () => showNavigationApiSetup(context),
               );
             },
           ),
@@ -459,4 +493,356 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+}
+
+void showSpotifySetup(BuildContext context) {
+  final controller = TextEditingController(text: SettingsService().spotifyClientId);
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: const Color(0xFF1A1A1A),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  const Text('Connexion Spotify',
+                      style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 18, fontWeight: FontWeight.w700)),
+                  const SizedBox(width: 8),
+                  const Text('- 6 min',
+                      style: TextStyle(color: Color(0xFF888888), fontSize: 12)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Créez une app Spotify Developer pour obtenir votre Client ID.',
+                style: TextStyle(color: Color(0xFF888888), fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              _spotifySetupStep('1',
+                  'Rendez-vous sur le dashboard Spotify Developer et connectez-vous avec votre compte Spotify.',
+                  buttonLabel: 'Ouvrir le dashboard',
+                  buttonUrl: 'https://developer.spotify.com/dashboard'),
+              _spotifySetupStep('2',
+                  'Cliquez "Create App". Remplissez un nom, cochez "Web API", puis cliquez "Save".'),
+              _spotifySetupStep('3',
+                  'Dans les Settings de l\'app, ajoutez ce Redirect URI exactement :',
+                  highlight: 'cobalttask://spotify-callback'),
+              _spotifySetupStep('4',
+                  'Dans "Settings" → "User Management", ajoutez l\'email de votre compte Spotify.'),
+              _spotifySetupStep('5',
+                  'Copiez le Client ID affiché en haut des Settings de l\'app et collez-le ci-dessous.'),
+              const SizedBox(height: 20),
+              TextField(
+                controller: controller,
+                style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 14),
+                decoration: InputDecoration(
+                  labelText: 'Client ID Spotify',
+                  labelStyle: const TextStyle(color: Color(0xFF888888), fontSize: 13),
+                  hintText: 'ex: a1b2c3d4e5f6g7h8i9...',
+                  hintStyle: const TextStyle(color: Color(0xFF555555), fontSize: 12),
+                  filled: true,
+                  fillColor: const Color(0xFF111111),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF333333)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF333333)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF1DB954)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    final id = controller.text.trim();
+                    if (id.isNotEmpty) {
+                      SettingsService().spotifyClientId = id;
+                      Navigator.pop(ctx);
+                      AudioService().connectSpotify();
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1DB954),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text('Autoriser l\'accès',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _spotifySetupStep(String number, String text,
+    {String? highlight, String? buttonLabel, String? buttonUrl}) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 22,
+          height: 22,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1DB954).withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Text(number,
+              style: const TextStyle(
+                  color: Color(0xFF1DB954), fontSize: 11, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(text,
+                  style: const TextStyle(
+                      color: Color(0xFFCCCCCC), fontSize: 13, height: 1.4)),
+              if (highlight != null) ...[
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF111111),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF333333)),
+                  ),
+                  child: Text(highlight,
+                      style: const TextStyle(
+                          color: Color(0xFF1DB954),
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          letterSpacing: 0.3)),
+                ),
+              ],
+              if (buttonLabel != null && buttonUrl != null) ...[
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => launchUrl(Uri.parse(buttonUrl),
+                      mode: LaunchMode.externalApplication),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1DB954).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF1DB954).withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.open_in_new, color: Color(0xFF1DB954), size: 14),
+                        const SizedBox(width: 6),
+                        Text(buttonLabel,
+                            style: const TextStyle(
+                                color: Color(0xFF1DB954),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+void showNavigationApiSetup(BuildContext context) {
+  final mapsController = TextEditingController(text: SettingsService().googleMapsApiKey);
+  final geminiController = TextEditingController(text: SettingsService().geminiApiKey);
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: const Color(0xFF1A1A1A),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Briefing vocal navigation',
+                  style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Text(
+                'Avant d\'ouvrir Maps, Cobalt calcule le trajet et le résume à voix haute. Deux clés Google sont nécessaires.',
+                style: TextStyle(color: Color(0xFF888888), fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              _navApiStep('1', 'Ouvrez Google Cloud Console et activez les APIs "Directions API" et "Generative Language API" sur votre projet.',
+                  buttonLabel: 'Ouvrir Cloud Console',
+                  buttonUrl: 'https://console.cloud.google.com/apis/library'),
+              _navApiStep('2', 'Allez dans "APIs & Services" → "Credentials" → "Create credentials" → "API key". Créez deux clés (ou une seule avec les deux APIs activées).'),
+              _navApiStep('3', 'Pour la clé Gemini, vous pouvez aussi utiliser AI Studio (plus simple).',
+                  buttonLabel: 'Ouvrir AI Studio',
+                  buttonUrl: 'https://aistudio.google.com/apikey'),
+              const SizedBox(height: 4),
+              _navApiKeyField(
+                label: 'Google Maps API Key',
+                hint: 'AIza...',
+                controller: mapsController,
+                color: const Color(0xFF4285F4),
+              ),
+              const SizedBox(height: 12),
+              _navApiKeyField(
+                label: 'Gemini API Key',
+                hint: 'AIza...',
+                controller: geminiController,
+                color: const Color(0xFF7B4FFF),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    SettingsService().googleMapsApiKey = mapsController.text.trim();
+                    SettingsService().geminiApiKey = geminiController.text.trim();
+                    Navigator.pop(ctx);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF34A853),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text('Enregistrer',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _navApiStep(String number, String text, {String? buttonLabel, String? buttonUrl}) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 22,
+          height: 22,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFF34A853).withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Text(number,
+              style: const TextStyle(color: Color(0xFF34A853), fontSize: 11, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(text,
+                  style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 13, height: 1.4)),
+              if (buttonLabel != null && buttonUrl != null) ...[
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => launchUrl(Uri.parse(buttonUrl),
+                      mode: LaunchMode.externalApplication),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF34A853).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF34A853).withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.open_in_new, color: Color(0xFF34A853), size: 14),
+                        const SizedBox(width: 6),
+                        Text(buttonLabel,
+                            style: const TextStyle(
+                                color: Color(0xFF34A853),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _navApiKeyField({
+  required String label,
+  required String hint,
+  required TextEditingController controller,
+  required Color color,
+}) {
+  return TextField(
+    controller: controller,
+    style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 13),
+    decoration: InputDecoration(
+      labelText: label,
+      labelStyle: TextStyle(color: color.withValues(alpha: 0.8), fontSize: 13),
+      hintText: hint,
+      hintStyle: const TextStyle(color: Color(0xFF555555), fontSize: 12),
+      filled: true,
+      fillColor: const Color(0xFF111111),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFF333333)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFF333333)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: color),
+      ),
+    ),
+  );
 }

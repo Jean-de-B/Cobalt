@@ -803,9 +803,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ),
                         onPressed: () {
                           Navigator.pop(sheetContext);
-                          Future.delayed(const Duration(milliseconds: 500), () {
-                            _audioService.connectSpotify();
-                          });
+                          if (SettingsService().spotifyClientId.isEmpty) {
+                            Future.delayed(const Duration(milliseconds: 300), () {
+                              if (context.mounted) showSpotifySetup(context);
+                            });
+                          } else {
+                            Future.delayed(const Duration(milliseconds: 500), () {
+                              _audioService.connectSpotify();
+                            });
+                          }
                         },
                       ),
                     ),

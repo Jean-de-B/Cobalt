@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -51,9 +50,15 @@ class NavigationResult {
 class LocalNavigationService {
   bool _initialized = false;
 
-  /// Clés API (chargées depuis .env)
-  String? _googleMapsApiKey;
-  String? _geminiApiKey;
+  String? get _googleMapsApiKey {
+    final v = SettingsService().googleMapsApiKey;
+    return v.isEmpty ? null : v;
+  }
+
+  String? get _geminiApiKey {
+    final v = SettingsService().geminiApiKey;
+    return v.isEmpty ? null : v;
+  }
 
   /// Mapping des modes de transport vers les codes Google Maps
   static const Map<String, String> _travelModes = {
@@ -76,21 +81,6 @@ class LocalNavigationService {
   /// Initialise le service
   Future<void> initialize() async {
     if (_initialized) return;
-
-    // Charger les clés API depuis .env (optionnelles)
-    _googleMapsApiKey = dotenv.env['GOOGLE_MAPS_API_KEY'];
-    _geminiApiKey = dotenv.env['GEMINI_API_KEY'];
-
-    if (_googleMapsApiKey == null || _googleMapsApiKey == 'YOUR_KEY_HERE') {
-      _googleMapsApiKey = null;
-      // ignore: avoid_print
-      print('[Navigation] GOOGLE_MAPS_API_KEY non configurée → briefing désactivé');
-    }
-    if (_geminiApiKey == null || _geminiApiKey == 'YOUR_KEY_HERE') {
-      _geminiApiKey = null;
-      // ignore: avoid_print
-      print('[Navigation] GEMINI_API_KEY non configurée → briefing désactivé');
-    }
 
     _initialized = true;
     // ignore: avoid_print

@@ -60,9 +60,17 @@ class GoogleAuthService {
   /// Initialise le service et tente une connexion silencieuse
   Future<bool> initialize() async {
     try {
-      // Tenter une connexion silencieuse (si déjà connecté)
-      _currentUser = await _googleSignIn.signInSilently();
+      // 1. Session encore en mémoire (même process, ex: hot restart)
+      _currentUser = _googleSignIn.currentUser;
+      if (_currentUser != null) {
+        await _createAuthClient();
+        // ignore: avoid_print
+        print('GOOGLE_AUTH: Session mémoire trouvée - ${_currentUser!.email}');
+        return true;
+      }
 
+      // 2. Reconnexion silencieuse via token stocké (cas normal après redémarrage)
+      _currentUser = await _googleSignIn.signInSilently();
       if (_currentUser != null) {
         await _createAuthClient();
         // ignore: avoid_print
@@ -71,7 +79,7 @@ class GoogleAuthService {
       }
 
       // ignore: avoid_print
-      print('GOOGLE_AUTH: Aucune session précédente trouvée');
+      print('GOOGLE_AUTH: Aucune session persistante — connexion manuelle requise');
       return false;
     } catch (e) {
       // ignore: avoid_print

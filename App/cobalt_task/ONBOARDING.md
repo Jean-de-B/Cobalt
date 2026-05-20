@@ -101,14 +101,16 @@ Le Free Tier limite a 6000 tokens/minute (2 commandes rapprochees = rate limit).
 
 Permet de controler la musique par la voix : "joue du jazz", "pause", "like ce titre", "mets la musique sur mon ordinateur".
 
+Le Client ID est saisi directement dans l'app -- aucun fichier de configuration necessaire.
+
 ### 5.1 Creer une app Spotify Developer
 
 1. Va sur **https://developer.spotify.com/dashboard**
 2. Clique **Create App**
 3. Nom : `Cobalt Task`, Description : `Assistant vocal`
 4. **Redirect URI** : `cobalttask://spotify-callback` (IMPORTANT : copie exactement)
-5. Coche **Web API**
-6. Copie le **Client ID**
+5. Coche **Web API**, puis sauvegarde
+6. Copie le **Client ID** affiche en haut des Settings
 
 ### 5.2 Ajouter ton compte en utilisateur test
 
@@ -119,13 +121,9 @@ En mode Development (avant publication), seuls les comptes ajoutes manuellement 
 
 ### 5.3 Configurer dans Cobalt
 
-Ajoute dans le fichier `.env` :
+Dans l'app : **Parametres** (tap sur "Cobalt Task") > **Comptes** > **Connecter Spotify**
 
-```
-SPOTIFY_CLIENT_ID=ton_client_id_ici
-```
-
-Puis dans l'app : **Parametres** (tap sur "Cobalt Task") > **Comptes** > **Connecter Spotify**
+L'app affiche un guide pas-a-pas et demande ton Client ID. Colle-le dans le champ et appuie sur "Autoriser l'acces" -- l'app ouvre automatiquement la page de connexion Spotify.
 
 ---
 
@@ -230,14 +228,13 @@ Voici un template avec toutes les cles possibles :
 # OBLIGATOIRE - Transcription vocale et IA
 GROQ_API_KEY=gsk_...
 
-# OPTIONNEL - Controle musical
-SPOTIFY_CLIENT_ID=...
-
 # OPTIONNEL - Briefing vocal navigation
 GOOGLE_MAPS_API_KEY=...
 GEMINI_API_KEY=...
 
 ```
+
+Note : le Client ID Spotify est configure directement dans l'app (Parametres > Comptes > Connecter Spotify), pas dans ce fichier.
 
 ---
 

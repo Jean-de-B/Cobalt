@@ -74,7 +74,18 @@ class GoogleBridgeService {
 
   /// Stream pour l'état de connexion Google
   final _connectionStateController = StreamController<bool>.broadcast();
-  Stream<bool> get connectionStateStream => _connectionStateController.stream;
+
+  /// Stream avec replay : chaque nouvel abonné reçoit immédiatement l'état courant,
+  /// puis les événements suivants. Évite le race condition entre init et ouverture UI.
+  Stream<bool> get connectionStateStream => Stream.multi((controller) {
+    controller.add(isConnected);
+    final sub = _connectionStateController.stream.listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+    controller.onCancel = sub.cancel;
+  });
 
   /// État d'initialisation
   bool _isInitialized = false;

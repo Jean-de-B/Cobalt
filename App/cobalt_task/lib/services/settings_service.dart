@@ -214,4 +214,30 @@ class SettingsService {
     _prefs?.setBool('debug_console', v);
     _notify();
   }
+
+  // ---------------------------------------------------------------------------
+  // SPOTIFY — Client ID (saisi par l'utilisateur dans l'app)
+  // ---------------------------------------------------------------------------
+
+  String get spotifyClientId => _prefs?.getString('spotify_client_id') ?? '';
+  set spotifyClientId(String v) {
+    _prefs?.setString('spotify_client_id', v);
+    _notify();
+  }
+
+  // ---------------------------------------------------------------------------
+  // NAVIGATION — Clés API briefing vocal (optionnelles)
+  // ---------------------------------------------------------------------------
+
+  String get googleMapsApiKey => _prefs?.getString('google_maps_api_key') ?? '';
+  set googleMapsApiKey(String v) {
+    _prefs?.setString('google_maps_api_key', v);
+    _notify();
+  }
+
+  String get geminiApiKey => _prefs?.getString('gemini_api_key') ?? '';
+  set geminiApiKey(String v) {
+    _prefs?.setString('gemini_api_key', v);
+    _notify();
+  }
 }

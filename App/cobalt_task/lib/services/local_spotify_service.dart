@@ -5,8 +5,8 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
+import 'settings_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -66,8 +66,8 @@ class LocalSpotifyService {
   Stream<bool> get connectionStream => _connectionController.stream;
   bool get isConnected => _isConnected;
 
-  // --- Client ID depuis .env ---
-  String get _clientId => dotenv.env['SPOTIFY_CLIENT_ID'] ?? '';
+  // --- Client ID saisi par l'utilisateur (SharedPreferences) ---
+  String get _clientId => SettingsService().spotifyClientId;
 
   // ===========================================================================
   // INITIALISATION
@@ -111,9 +111,9 @@ class LocalSpotifyService {
     // ignore: avoid_print
     print('[Spotify] initialize() terminé (_initialized=$_initialized)');
 
-    if (_clientId.isEmpty || _clientId == 'YOUR_CLIENT_ID_HERE') {
+    if (_clientId.isEmpty) {
       // ignore: avoid_print
-      print('[Spotify] ERREUR: SPOTIFY_CLIENT_ID manquant dans .env');
+      print('[Spotify] ERREUR: Client ID non configuré (Paramètres > Comptes > Connecter Spotify)');
       return;
     }
     // ignore: avoid_print
