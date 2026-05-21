@@ -130,6 +130,69 @@ class LocalCalendarService {
     print('[Calendar] Service initialisé');
   }
 
+  /// Crée un événement à partir d'une chaîne date/heure brute (ex: "demain 14h").
+  /// Même logique de parsing que GoogleCalendarService.
+  Future<CalendarResult> createEventFromString({
+    required String title,
+    required String dateTime,
+    String? endDateTime,
+    String? location,
+    String? description,
+  }) async {
+    final start = _parseDateTime(dateTime);
+    final end = endDateTime != null ? _parseDateTime(endDateTime) : null;
+    return createEvent(
+      title: title,
+      startTime: start,
+      endTime: end,
+      location: location,
+      description: description,
+    );
+  }
+
+  /// Parse une chaîne date/heure relative en DateTime absolu.
+  DateTime _parseDateTime(String input) {
+    final now = DateTime.now();
+    final lower = input.toLowerCase().trim();
+
+    int hour = 9;
+    int minute = 0;
+    final heureMatch = RegExp(r'(\d{1,2})[h:](\d{0,2})').firstMatch(lower);
+    if (heureMatch != null) {
+      hour = int.parse(heureMatch.group(1)!);
+      if (heureMatch.group(2)?.isNotEmpty == true) {
+        minute = int.parse(heureMatch.group(2)!);
+      }
+    } else if (lower.contains('midi')) {
+      hour = 12;
+    } else if (lower.contains('soir')) {
+      hour = 19;
+    } else if (lower.contains('matin')) {
+      hour = 9;
+    }
+
+    DateTime target = now;
+    if (lower.contains("aujourd'hui") || lower.contains('ce soir') || lower.contains('ce matin')) {
+      target = now;
+    } else if (lower.contains('demain')) {
+      target = now.add(const Duration(days: 1));
+    } else if (lower.contains('après-demain') || lower.contains('apres-demain')) {
+      target = now.add(const Duration(days: 2));
+    } else {
+      const jours = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+      for (int i = 0; i < jours.length; i++) {
+        if (lower.contains(jours[i])) {
+          var diff = (i + 1) - now.weekday;
+          if (diff <= 0) diff += 7;
+          target = now.add(Duration(days: diff));
+          break;
+        }
+      }
+    }
+
+    return DateTime(target.year, target.month, target.day, hour, minute);
+  }
+
   /// Crée un événement dans le calendrier
   Future<CalendarResult> createEvent({
     required String title,

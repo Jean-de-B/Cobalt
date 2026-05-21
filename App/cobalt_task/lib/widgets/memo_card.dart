@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../constants/app_constants.dart';
 import '../models/voice_note.dart';
 import '../services/ai_sorter_service.dart';
+import '../services/settings_service.dart';
 
 /// =============================================================================
 /// memo_card.dart
@@ -257,13 +258,12 @@ class _MemoCardState extends State<MemoCard> {
         return _buildPaymentDetails(params, resolved);
       case 'none':
       default:
-        final memo = params['memo'] as String?;
-        if (memo == null || memo.isEmpty) return const SizedBox.shrink();
-        // Afficher la transcription complète
-        final displayText = memo.trim();
+        final raw = params['memo'] as String?;
+        final displayText =
+            (raw != null && raw.isNotEmpty) ? raw : widget.note.summary;
         if (displayText.isEmpty) return const SizedBox.shrink();
         return Text(
-          displayText,
+          displayText.trim(),
           style: AppTextStyles.cardBody,
         );
     }
@@ -481,7 +481,10 @@ class _MemoCardState extends State<MemoCard> {
         return '$amtStr → $c';
       case 'none':
         final memo = params['memo'] as String? ?? '';
-        if (memo.isEmpty) return 'Mémo';
+        if (memo.isEmpty) {
+          final s = widget.note.summary;
+          return s.isNotEmpty ? _stripEmoji(s) : 'Mémo';
+        }
         final firstLine = memo.split('\n').first.trim();
         return firstLine.isNotEmpty ? firstLine : 'Mémo';
       default:
@@ -513,17 +516,24 @@ class _MemoCardState extends State<MemoCard> {
         return 'Paiement';
       case 'none':
       default:
-        return _badgeForCategory(widget.note.category);
+        return (params['syncedService'] as String?) ?? _badgeForCategory(widget.note.category);
     }
   }
 
-  String? _badgeForCategory(NoteCategory category) => switch (category) {
-    NoteCategory.todo     => 'Google Tasks',
-    NoteCategory.shopping => 'Google Tasks',
-    NoteCategory.event    => 'Google Calendar',
-    NoteCategory.contact  => 'Contacts',
-    NoteCategory.memo     => 'Google Tasks',
-  };
+  String? _badgeForCategory(NoteCategory category) {
+    final s = SettingsService();
+    return switch (category) {
+      NoteCategory.todo     => SettingsService.reminderServices[s.reminderService] ?? 'Google Tasks',
+      NoteCategory.shopping => SettingsService.listServices[s.listService] ?? 'Google Tasks',
+      NoteCategory.event    => 'Google Calendar',
+      NoteCategory.contact  => 'Contacts',
+      NoteCategory.memo     => switch (s.notesService) {
+          'samsung' => 'Samsung Notes',
+          'notion'  => 'Notion',
+          _         => 'Google Tasks',
+        },
+    };
+  }
 
   _ActionVisuals _getVisuals() {
     if (widget.note.isProcessing) {

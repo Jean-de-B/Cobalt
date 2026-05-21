@@ -85,6 +85,22 @@ class SettingsService {
   };
 
   // ---------------------------------------------------------------------------
+  // LISTE
+  // ---------------------------------------------------------------------------
+
+  String get listService => _prefs?.getString('list_service') ?? 'google_tasks';
+  set listService(String v) {
+    _prefs?.setString('list_service', v);
+    _notify();
+  }
+
+  static const Map<String, String> listServices = {
+    'google_tasks': 'Google Tasks',
+    'samsung_reminders': 'Samsung Reminders',
+    'todoist': 'Todoist',
+  };
+
+  // ---------------------------------------------------------------------------
   // NOTES
   // ---------------------------------------------------------------------------
 

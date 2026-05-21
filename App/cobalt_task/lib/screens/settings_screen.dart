@@ -73,6 +73,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           _buildServiceRow(
+            icon: Icons.checklist,
+            color: const Color(0xFF29B6F6),
+            label: 'Liste',
+            value: _settings.listService,
+            options: SettingsService.listServices,
+            onChanged: (v) => setState(() => _settings.listService = v),
+          ),
+
+          _buildServiceRow(
             icon: Icons.note_alt,
             color: const Color(0xFFFFB300),
             label: 'Notes',

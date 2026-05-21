@@ -2029,7 +2029,7 @@ class _SpotifyPlayerSheetState extends State<_SpotifyPlayerSheet> {
 /// Fiche contrôles MediaKey (Deezer, YouTube Music)
 /// =============================================================================
 
-class _MediaKeySheet extends StatelessWidget {
+class _MediaKeySheet extends StatefulWidget {
   final String label;
   final Color color;
   final String package;
@@ -2042,12 +2042,19 @@ class _MediaKeySheet extends StatelessWidget {
     required this.audioService,
   });
 
+  @override
+  State<_MediaKeySheet> createState() => _MediaKeySheetState();
+}
+
+class _MediaKeySheetState extends State<_MediaKeySheet> {
+  bool _isPlaying = false;
+
   void _openApp() {
-    if (package.isEmpty) return;
+    if (widget.package.isEmpty) return;
     AndroidIntent(
       action: 'android.intent.action.MAIN',
       category: 'android.intent.category.LAUNCHER',
-      package: package,
+      package: widget.package,
       flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
     ).launch();
   }
@@ -2061,12 +2068,12 @@ class _MediaKeySheet extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.music_note, color: color, size: 18),
+              Icon(Icons.music_note, color: widget.color, size: 18),
               const SizedBox(width: 6),
               Text(
-                label,
+                widget.label,
                 style: TextStyle(
-                  color: color,
+                  color: widget.color,
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
                 ),
@@ -2076,7 +2083,7 @@ class _MediaKeySheet extends StatelessWidget {
                 onTap: _openApp,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Icon(Icons.open_in_new, color: color, size: 20),
+                  child: Icon(Icons.open_in_new, color: widget.color, size: 20),
                 ),
               ),
             ],
@@ -2097,20 +2104,27 @@ class _MediaKeySheet extends StatelessWidget {
                   icon: const Icon(Icons.skip_previous_rounded),
                   color: AppColors.textPrimary,
                   iconSize: 32,
-                  onPressed: () => audioService.mediaPrevious(),
+                  onPressed: () => widget.audioService.mediaPrevious(),
                 ),
                 const SizedBox(width: 12),
                 IconButton(
-                  icon: Icon(Icons.play_circle_filled, color: color),
+                  icon: Icon(
+                    _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                    color: widget.color,
+                  ),
                   iconSize: 52,
-                  onPressed: () => audioService.mediaPlayPause(),
+                  tooltip: _isPlaying ? 'Pause' : 'Lecture',
+                  onPressed: () {
+                    widget.audioService.mediaPlayPause();
+                    setState(() => _isPlaying = !_isPlaying);
+                  },
                 ),
                 const SizedBox(width: 12),
                 IconButton(
                   icon: const Icon(Icons.skip_next_rounded),
                   color: AppColors.textPrimary,
                   iconSize: 32,
-                  onPressed: () => audioService.mediaNext(),
+                  onPressed: () => widget.audioService.mediaNext(),
                 ),
                 const SizedBox(width: 8),
               ],

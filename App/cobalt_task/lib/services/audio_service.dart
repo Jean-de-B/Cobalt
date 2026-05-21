@@ -884,21 +884,28 @@ class AudioService {
       // ignore: avoid_print
       print('PIPELINE: Terminé - Note liée à fiche $ficheId');
 
-      // ÉTAPE 6: Sync vers Google (si connecté)
-      if (_googleBridgeService.isConnected) {
+      // ÉTAPE 6: Sync vers le service configuré (local ou Google)
+      // Les services locaux (Samsung, Todoist) fonctionnent sans connexion Google.
+      // ignore: avoid_print
+      print('GOOGLE_SYNC: Synchronisation ${analysis.category.name}...');
+      final googleId = await _googleBridgeService.syncAnalysisResult(analysis);
+      if (googleId != null) {
         // ignore: avoid_print
-        print('GOOGLE_SYNC: Synchronisation ${analysis.category.name} vers Google...');
-        final googleId = await _googleBridgeService.syncAnalysisResult(analysis);
-        if (googleId != null) {
-          // ignore: avoid_print
-          print('GOOGLE_SYNC: Succès - ID: $googleId');
-        } else {
-          // ignore: avoid_print
-          print('GOOGLE_SYNC: Échec ou non applicable');
-        }
+        print('GOOGLE_SYNC: Succès - ID: $googleId');
+        // Figer le service dans actionJson pour affichage historique sur la fiche
+        try {
+          final svcLabel = _serviceLabel(googleId, analysis.category);
+          final rawJson = updatedNote.actionJson ?? '{}';
+          final map = jsonDecode(rawJson) as Map<String, dynamic>;
+          final params = Map<String, dynamic>.from(map['params'] as Map? ?? {});
+          params['syncedService'] = svcLabel;
+          map['params'] = params;
+          final noteWithService = updatedNote.copyWith(actionJson: jsonEncode(map));
+          await _databaseService.updateNote(noteWithService);
+        } catch (_) {}
       } else {
         // ignore: avoid_print
-        print('GOOGLE_SYNC: Non connecté - ${analysis.category.name} non synchronisé');
+        print('GOOGLE_SYNC: Non applicable (non connecté ou service non configuré)');
       }
 
       // ÉTAPE 7: Feedback audio TTS pour confirmer l'enregistrement
@@ -1638,6 +1645,24 @@ class AudioService {
   // ---------------------------------------------------------------------------
   // NETTOYAGE
   // ---------------------------------------------------------------------------
+
+  /// Traduit un googleId/localId retourné par syncFiche en nom d'app lisible.
+  String _serviceLabel(String googleId, NoteCategory category) {
+    return switch (googleId) {
+      'local_samsung_reminder'  => 'Samsung Reminders',
+      'local_samsung_calendar'  => 'Samsung Calendar',
+      'local_todoist'           => 'Todoist',
+      'local_samsung'           => 'Samsung Notes',
+      'local_notion'            => 'Notion',
+      'local_chooser'           => 'Application',
+      _ => switch (category) {
+        NoteCategory.todo || NoteCategory.shopping => 'Google Tasks',
+        NoteCategory.event                         => 'Google Calendar',
+        NoteCategory.contact                       => 'Contacts',
+        NoteCategory.memo                          => 'Google Tasks',
+      },
+    };
+  }
 
   /// Libère toutes les ressources
   Future<void> dispose() async {

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:android_intent_plus/flag.dart';
 import 'package:http/http.dart' as http;
 import 'ai_sorter_service.dart';
 import 'settings_service.dart';
@@ -9,6 +11,7 @@ import 'google_tasks_service.dart';
 import 'google_calendar_service.dart';
 import 'google_people_service.dart';
 import 'google_docs_service.dart';
+import 'local_calendar_service.dart';
 
 /// =============================================================================
 /// google_bridge_service.dart
@@ -65,6 +68,9 @@ class GoogleBridgeService {
   late final GoogleCalendarService _calendarService;
   late final GooglePeopleService _peopleService;
   late final GoogleDocsService _docsService;
+
+  /// Service calendrier local (Samsung Calendar, sans connexion Google)
+  final LocalCalendarService _localCalendarService = LocalCalendarService();
 
   /// Historique des 5 dernières actions
   final List<SyncAction> _actionHistory = [];
@@ -272,6 +278,77 @@ class GoogleBridgeService {
     }
   }
 
+  /// Lance le sélecteur de partage Android sans cibler de package.
+  Future<String> _launchShareChooser(String shareText) async {
+    try {
+      await AndroidIntent(
+        action: 'android.intent.action.SEND',
+        type: 'text/plain',
+        arguments: <String, dynamic>{
+          'android.intent.extra.TEXT': shareText,
+          'android.intent.extra.SUBJECT': shareText.split('\n').first,
+        },
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+      ).launch();
+    } catch (e) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: Erreur chooser - $e');
+    }
+    return 'local_chooser';
+  }
+
+  /// Lance une app avec intent SEND text/plain ciblé sur un package.
+  /// Samsung Reminders parse la première ligne de TEXT comme titre et les
+  /// suivantes comme notes — SUBJECT est intentionnellement omis pour éviter
+  /// le doublon (Samsung le préfixe au corps en plus du titre).
+  /// Fallback vers le sélecteur système si l'app n'est pas installée.
+  Future<String> _launchAppWithFallback({
+    required String package,
+    required String subject,
+    String body = '',
+    required String returnId,
+    String? logName,
+  }) async {
+    final fullText = body.isNotEmpty ? '$subject\n$body' : subject;
+    try {
+      await AndroidIntent(
+        action: 'android.intent.action.SEND',
+        package: package,
+        type: 'text/plain',
+        arguments: <String, dynamic>{
+          'android.intent.extra.TEXT': fullText,
+        },
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+      ).launch();
+      return returnId;
+    } catch (e) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: ${logName ?? package} non installé – chooser - $e');
+      return _launchShareChooser(fullText);
+    }
+  }
+
+  /// Lance Todoist via deep link ou fallback chooser.
+  Future<String> _launchTodoist(String title, String? noteText) async {
+    final uri = 'todoist://addtask?content=${Uri.encodeComponent(title)}'
+        '${noteText != null && noteText.isNotEmpty ? '&note=${Uri.encodeComponent(noteText)}' : ''}';
+    try {
+      await AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: uri,
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+      ).launch();
+      return 'local_todoist';
+    } catch (e) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: Todoist non installé – chooser - $e');
+      final shareText = noteText != null && noteText.isNotEmpty
+          ? '$title\n\n$noteText'
+          : title;
+      return _launchShareChooser(shareText);
+    }
+  }
+
   Future<String?> syncFiche({
     required NoteCategory category,
     required String title,
@@ -292,10 +369,93 @@ class GoogleBridgeService {
       final notesTarget = SettingsService().notesService;
       if (notesTarget == 'samsung') {
         await _openSamsungNotes(title, content);
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: 'local_samsung'));
         return 'local_samsung';
       } else if (notesTarget == 'notion') {
         await _createNotionPage(title, content);
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: 'local_notion'));
         return 'local_notion';
+      }
+    }
+
+    // Samsung Reminders / Todoist pour les rappels (TODO)
+    if (category == NoteCategory.todo) {
+      final reminderSvc = SettingsService().reminderService;
+      if (reminderSvc == 'samsung_reminders') {
+        final body = items.isNotEmpty
+            ? items.map((i) => '• $i').join('\n')
+            : (content != null && content.isNotEmpty ? content : '');
+        final id = await _launchAppWithFallback(
+          package: 'com.samsung.android.app.reminder',
+          subject: title,
+          body: body,
+          returnId: 'local_samsung_reminder',
+          logName: 'Samsung Reminders',
+        );
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: id));
+        return id;
+      } else if (reminderSvc == 'todoist') {
+        final noteText = items.isNotEmpty ? items.map((i) => '• $i').join('\n') : content;
+        final id = await _launchTodoist(title, noteText);
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: id));
+        return id;
+      }
+    }
+
+    // Samsung Reminders / Todoist pour les listes (shopping)
+    if (category == NoteCategory.shopping) {
+      final listSvc = SettingsService().listService;
+      if (listSvc == 'samsung_reminders') {
+        final body = items.isNotEmpty ? items.map((i) => '• $i').join('\n') : '';
+        // Use a fixed title when items are present: the AI summary for shopping
+        // often contains the item names (e.g. "Acheter tomates et pain"), which
+        // would duplicate them next to the bullet list in Samsung's notes area.
+        final subj = items.isNotEmpty ? 'Liste de courses' : title;
+        final id = await _launchAppWithFallback(
+          package: 'com.samsung.android.app.reminder',
+          subject: subj,
+          body: body,
+          returnId: 'local_samsung_reminder',
+          logName: 'Samsung Reminders',
+        );
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: id));
+        return id;
+      } else if (listSvc == 'todoist') {
+        final noteText = items.isNotEmpty ? items.map((i) => '• $i').join('\n') : null;
+        final id = await _launchTodoist(title, noteText);
+        _addToHistory(SyncAction(timestamp: DateTime.now(), category: category, title: title, success: true, googleId: id));
+        return id;
+      }
+    }
+
+    // Samsung Calendar pour les événements (sans connexion Google requise)
+    if (category == NoteCategory.event) {
+      final calSvc = SettingsService().calendarService;
+      if (calSvc == 'samsung') {
+        if (eventDateTime == null) {
+          // ignore: avoid_print
+          print('GOOGLE_BRIDGE: Samsung Calendar – date manquante');
+          return null;
+        }
+        await _localCalendarService.initialize();
+        final result = await _localCalendarService.createEventFromString(
+          title: title,
+          dateTime: eventDateTime,
+          location: eventLocation,
+          description: content,
+        );
+        final id = result.success ? 'local_samsung_calendar' : null;
+        // ignore: avoid_print
+        print('GOOGLE_BRIDGE: Samsung Calendar – ${result.success ? "OK ${result.eventId}" : "Erreur: ${result.error}"}');
+        _addToHistory(SyncAction(
+          timestamp: DateTime.now(),
+          category: category,
+          title: title,
+          success: result.success,
+          googleId: id,
+          errorMessage: result.error,
+        ));
+        return id;
       }
     }
 
