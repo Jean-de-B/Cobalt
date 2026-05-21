@@ -1630,6 +1630,11 @@ class AudioService {
   Future<List<Map<String, dynamic>>> spotifyGetDevices() => _localMediaService.spotifyService.getDevices();
   Future<void> spotifyTransferPlayback(String id) => _localMediaService.spotifyService.transferPlayback(id);
 
+  /// Contrôles MediaKey génériques (Deezer, YouTube Music)
+  Future<void> mediaPlayPause() => _localMediaService.execute(controlType: MediaControlType.playPause);
+  Future<void> mediaNext() => _localMediaService.execute(controlType: MediaControlType.next);
+  Future<void> mediaPrevious() => _localMediaService.execute(controlType: MediaControlType.previous);
+
   // ---------------------------------------------------------------------------
   // NETTOYAGE
   // ---------------------------------------------------------------------------

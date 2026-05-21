@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'ai_sorter_service.dart';
 import 'settings_service.dart';
 import 'google_auth_service.dart';
@@ -197,6 +199,79 @@ class GoogleBridgeService {
     }
   }
 
+  /// Crée une page dans Notion via l'API REST (token d'intégration interne)
+  Future<void> _createNotionPage(String title, String? content) async {
+    final token = SettingsService().notionToken;
+    final rawPageId = SettingsService().notionPageId;
+
+    if (token.isEmpty || rawPageId.isEmpty) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: Notion non configuré (token ou page_id manquant)');
+      return;
+    }
+
+    // Normaliser l'ID de page : ajouter les tirets UUID si absent
+    final pageId = rawPageId.length == 32 && !rawPageId.contains('-')
+        ? '${rawPageId.substring(0, 8)}-${rawPageId.substring(8, 12)}-'
+          '${rawPageId.substring(12, 16)}-${rawPageId.substring(16, 20)}-'
+          '${rawPageId.substring(20)}'
+        : rawPageId;
+
+    final body = <String, dynamic>{
+      'parent': {'page_id': pageId},
+      'properties': {
+        'title': {
+          'title': [
+            {
+              'type': 'text',
+              'text': {'content': title},
+            }
+          ],
+        },
+      },
+    };
+
+    if (content != null && content.isNotEmpty) {
+      body['children'] = [
+        {
+          'object': 'block',
+          'type': 'paragraph',
+          'paragraph': {
+            'rich_text': [
+              {
+                'type': 'text',
+                'text': {'content': content},
+              }
+            ],
+          },
+        },
+      ];
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('https://api.notion.com/v1/pages'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28',
+        },
+        body: jsonEncode(body),
+      );
+
+      if (response.statusCode == 200) {
+        // ignore: avoid_print
+        print('GOOGLE_BRIDGE: Note créée dans Notion');
+      } else {
+        // ignore: avoid_print
+        print('GOOGLE_BRIDGE: Erreur Notion ${response.statusCode}: ${response.body}');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('GOOGLE_BRIDGE: Exception Notion: $e');
+    }
+  }
+
   Future<String?> syncFiche({
     required NoteCategory category,
     required String title,
@@ -212,6 +287,18 @@ class GoogleBridgeService {
     String? todoDue,
     String? sentiment,
   }) async {
+    // Samsung Notes et Notion ne nécessitent pas de connexion Google
+    if (category == NoteCategory.memo) {
+      final notesTarget = SettingsService().notesService;
+      if (notesTarget == 'samsung') {
+        await _openSamsungNotes(title, content);
+        return 'local_samsung';
+      } else if (notesTarget == 'notion') {
+        await _createNotionPage(title, content);
+        return 'local_notion';
+      }
+    }
+
     if (!isConnected) {
       // ignore: avoid_print
       print('GOOGLE_BRIDGE: Non connecté, sync ignorée');
@@ -263,16 +350,11 @@ class GoogleBridgeService {
           break;
 
         case NoteCategory.memo:
-          final notesTarget = SettingsService().notesService;
-          if (notesTarget == 'samsung') {
-            await _openSamsungNotes(title, content);
-          } else {
-            googleId = await _tasksService.addMemo(
-              title: title,
-              content: content,
-              sentiment: sentiment,
-            );
-          }
+          googleId = await _tasksService.addMemo(
+            title: title,
+            content: content,
+            sentiment: sentiment,
+          );
           break;
       }
     } catch (e) {

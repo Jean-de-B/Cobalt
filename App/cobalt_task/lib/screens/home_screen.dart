@@ -666,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             actions: [
               _buildTransferIndicator(),
               _buildMessagesIndicator(),
-              _buildSpotifyIndicator(),
+              _buildMusicIndicator(),
               _buildGoogleIndicator(),
               _buildBatteryIndicator(),
               BleStatusIndicator(
@@ -740,87 +740,142 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildSpotifyIndicator() {
-    return StreamBuilder<bool>(
-      stream: _audioService.spotifyConnectionStream,
-      initialData: _audioService.isSpotifyConnected,
-      builder: (context, snapshot) {
-        final isConnected = snapshot.data ?? false;
+  Widget _buildMusicIndicator() {
+    return StreamBuilder<void>(
+      stream: SettingsService().onChanged,
+      builder: (context, _) {
+        final service = SettingsService().musicService;
 
-        return Tooltip(
-          message: isConnected ? 'Spotify connecte' : 'Connecter Spotify',
-          child: InkWell(
-            onTap: () => _showSpotifyMenu(context, isConnected),
-            borderRadius: BorderRadius.circular(20),
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Icon(
-                Icons.music_note,
-                color: isConnected
-                    ? const Color(0xFF1DB954)
-                    : AppColors.textSecondary,
-                size: 22,
-              ),
-            ),
-          ),
+        if (service == 'spotify') {
+          return StreamBuilder<bool>(
+            stream: _audioService.spotifyConnectionStream,
+            initialData: _audioService.isSpotifyConnected,
+            builder: (context, snapshot) {
+              final isConnected = snapshot.data ?? false;
+              return _musicIconTile(
+                context: context,
+                color: isConnected ? const Color(0xFF1DB954) : AppColors.textSecondary,
+                tooltip: isConnected ? 'Spotify connecté' : 'Connecter Spotify',
+              );
+            },
+          );
+        }
+
+        return _musicIconTile(
+          context: context,
+          color: _musicServiceColor(service),
+          tooltip: SettingsService.musicServices[service] ?? service,
         );
       },
     );
   }
 
-  void _showSpotifyMenu(BuildContext context, bool isConnected) {
+  Widget _musicIconTile({
+    required BuildContext context,
+    required Color color,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: () => _showMusicMenu(context),
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Icon(Icons.music_note, color: color, size: 22),
+        ),
+      ),
+    );
+  }
+
+  void _showMusicMenu(BuildContext context) {
+    final service = SettingsService().musicService;
+
+    if (service == 'spotify') {
+      final isConnected = _audioService.isSpotifyConnected;
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: AppColors.surface,
+        builder: (sheetContext) => SafeArea(
+          child: isConnected
+              ? _SpotifyPlayerSheet(audioService: _audioService)
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                      child: Text(
+                        'Connectez Spotify pour controler la musique par la voix',
+                        style: AppTextStyles.metadata,
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.login, size: 18),
+                          label: const Text('Connecter Spotify'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1DB954),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          onPressed: () {
+                            Navigator.pop(sheetContext);
+                            if (SettingsService().spotifyClientId.isEmpty) {
+                              Future.delayed(const Duration(milliseconds: 300), () {
+                                if (context.mounted) showSpotifySetup(context);
+                              });
+                            } else {
+                              Future.delayed(const Duration(milliseconds: 500), () {
+                                _audioService.connectSpotify();
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      );
+      return;
+    }
+
+    // Deezer / YouTube Music — fiche avec contrôles MediaKey
+    final label = SettingsService.musicServices[service] ?? service;
+    final color = _musicServiceColor(service);
+    final package = switch (service) {
+      'deezer' => 'deezer.android.app',
+      'youtube_music' => 'com.google.android.apps.youtube.music',
+      _ => '',
+    };
+
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
       builder: (sheetContext) => SafeArea(
-        child: isConnected
-            ? _SpotifyPlayerSheet(audioService: _audioService)
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    child: Text(
-                      'Connectez Spotify pour controler la musique par la voix',
-                      style: AppTextStyles.metadata,
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.login, size: 18),
-                        label: const Text('Connecter Spotify'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF1DB954),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        onPressed: () {
-                          Navigator.pop(sheetContext);
-                          if (SettingsService().spotifyClientId.isEmpty) {
-                            Future.delayed(const Duration(milliseconds: 300), () {
-                              if (context.mounted) showSpotifySetup(context);
-                            });
-                          } else {
-                            Future.delayed(const Duration(milliseconds: 500), () {
-                              _audioService.connectSpotify();
-                            });
-                          }
-                        },
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+        child: _MediaKeySheet(
+          label: label,
+          color: color,
+          package: package,
+          audioService: _audioService,
+        ),
       ),
     );
   }
+
+  static Color _musicServiceColor(String service) => switch (service) {
+        'spotify' => const Color(0xFF1DB954),
+        'deezer' => const Color(0xFF9B59B6),
+        'youtube_music' => const Color(0xFFFF0000),
+        _ => AppColors.textSecondary,
+      };
 
   Widget _buildGoogleIndicator() {
     return Tooltip(
@@ -1966,6 +2021,107 @@ class _SpotifyPlayerSheetState extends State<_SpotifyPlayerSheet> {
             const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Fiche contrôles MediaKey (Deezer, YouTube Music)
+/// =============================================================================
+
+class _MediaKeySheet extends StatelessWidget {
+  final String label;
+  final Color color;
+  final String package;
+  final AudioService audioService;
+
+  const _MediaKeySheet({
+    required this.label,
+    required this.color,
+    required this.package,
+    required this.audioService,
+  });
+
+  void _openApp() {
+    if (package.isEmpty) return;
+    AndroidIntent(
+      action: 'android.intent.action.MAIN',
+      category: 'android.intent.category.LAUNCHER',
+      package: package,
+      flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+    ).launch();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.music_note, color: color, size: 18),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: _openApp,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Icon(Icons.open_in_new, color: color, size: 20),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.background.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.skip_previous_rounded),
+                  color: AppColors.textPrimary,
+                  iconSize: 32,
+                  onPressed: () => audioService.mediaPrevious(),
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  icon: Icon(Icons.play_circle_filled, color: color),
+                  iconSize: 52,
+                  onPressed: () => audioService.mediaPlayPause(),
+                ),
+                const SizedBox(width: 12),
+                IconButton(
+                  icon: const Icon(Icons.skip_next_rounded),
+                  color: AppColors.textPrimary,
+                  iconSize: 32,
+                  onPressed: () => audioService.mediaNext(),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Contrôle via les touches média Android',
+            style: AppTextStyles.metadata,
+          ),
+        ],
       ),
     );
   }

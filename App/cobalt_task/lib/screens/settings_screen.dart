@@ -64,6 +64,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           _buildServiceRow(
+            icon: Icons.alarm,
+            color: const Color(0xFFFF5722),
+            label: 'Rappel',
+            value: _settings.reminderService,
+            options: SettingsService.reminderServices,
+            onChanged: (v) => setState(() => _settings.reminderService = v),
+          ),
+
+          _buildServiceRow(
             icon: Icons.note_alt,
             color: const Color(0xFFFFB300),
             label: 'Notes',
@@ -213,6 +222,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onDisconnect: () async {
                   await _audioService.disconnectSpotify();
                   setState(() {});
+                },
+              );
+            },
+          ),
+
+          // Notion
+          StreamBuilder<void>(
+            stream: _settings.onChanged,
+            builder: (context, _) {
+              final configured = _settings.notionConfigured;
+              return _buildAccountRow(
+                icon: Icons.article_outlined,
+                color: const Color(0xFFCCCCCC),
+                label: 'Notion',
+                subtitle: configured ? 'Configuré' : 'Notes mémos',
+                connected: configured,
+                onConnect: () => showNotionSetup(context),
+                onDisconnect: () {
+                  _settings.notionToken = '';
+                  _settings.notionPageId = '';
                 },
               );
             },
@@ -842,6 +871,206 @@ Widget _navApiKeyField({
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
         borderSide: BorderSide(color: color),
+      ),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NOTION SETUP
+// ---------------------------------------------------------------------------
+
+void showNotionSetup(BuildContext context) {
+  final tokenController = TextEditingController(text: SettingsService().notionToken);
+  final pageController = TextEditingController(text: SettingsService().notionPageId);
+
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: const Color(0xFF1A1A1A),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  const Text('Connexion Notion',
+                      style: TextStyle(
+                          color: Color(0xFFEEEEEE),
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700)),
+                  const SizedBox(width: 8),
+                  const Text('- 3 min',
+                      style: TextStyle(color: Color(0xFF888888), fontSize: 12)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Vos mémos vocaux seront envoyés automatiquement dans une page Notion.',
+                style: TextStyle(color: Color(0xFF888888), fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              _notionSetupStep('1',
+                  'Créez une intégration sur Notion (connexions internes).',
+                  buttonLabel: 'Ouvrir notion.so/my-integrations',
+                  buttonUrl: 'https://www.notion.so/my-integrations'),
+              _notionSetupStep('2',
+                  'Cliquez "Nouvelle intégration". Donnez-lui un nom, puis copiez le "Token d\'intégration interne" (commence par secret_...).'),
+              _notionSetupStep('3',
+                  'Dans Notion, ouvrez ou créez la page où vous voulez recevoir vos mémos.'),
+              _notionSetupStep('4',
+                  'Cliquez "..." → "Connexions" → ajoutez votre intégration. Copiez ensuite l\'ID depuis l\'URL de la page (les 32 derniers caractères).'),
+              const SizedBox(height: 4),
+              _notionTextField(
+                label: 'Token d\'intégration',
+                hint: 'secret_xxx...',
+                controller: tokenController,
+              ),
+              const SizedBox(height: 12),
+              _notionTextField(
+                label: 'ID de la page cible',
+                hint: 'abc123def456... (depuis l\'URL)',
+                controller: pageController,
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    final token = tokenController.text.trim();
+                    final pageId = pageController.text.trim();
+                    if (token.isNotEmpty && pageId.isNotEmpty) {
+                      SettingsService().notionToken = token;
+                      SettingsService().notionPageId = pageId;
+                      Navigator.pop(ctx);
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFCCCCCC),
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text('Enregistrer',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _notionSetupStep(String number, String text,
+    {String? buttonLabel, String? buttonUrl}) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 22,
+          height: 22,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: const Color(0xFFCCCCCC).withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Text(number,
+              style: const TextStyle(
+                  color: Color(0xFFCCCCCC),
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(text,
+                  style: const TextStyle(
+                      color: Color(0xFFCCCCCC), fontSize: 13, height: 1.4)),
+              if (buttonLabel != null && buttonUrl != null) ...[
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => launchUrl(Uri.parse(buttonUrl),
+                      mode: LaunchMode.externalApplication),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFCCCCCC).withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: const Color(0xFFCCCCCC).withValues(alpha: 0.35)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.open_in_new,
+                            color: Color(0xFFCCCCCC), size: 14),
+                        const SizedBox(width: 6),
+                        Text(buttonLabel,
+                            style: const TextStyle(
+                                color: Color(0xFFCCCCCC),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _notionTextField({
+  required String label,
+  required String hint,
+  required TextEditingController controller,
+}) {
+  return TextField(
+    controller: controller,
+    style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 13),
+    decoration: InputDecoration(
+      labelText: label,
+      labelStyle:
+          const TextStyle(color: Color(0xFF999999), fontSize: 13),
+      hintText: hint,
+      hintStyle: const TextStyle(color: Color(0xFF555555), fontSize: 12),
+      filled: true,
+      fillColor: const Color(0xFF111111),
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFF333333)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFF333333)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFFCCCCCC)),
       ),
     ),
   );

@@ -66,7 +66,22 @@ class SettingsService {
   static const Map<String, String> calendarServices = {
     'google': 'Google Calendar',
     'samsung': 'Samsung Calendar',
-    'calendly': 'Calendly',
+  };
+
+  // ---------------------------------------------------------------------------
+  // RAPPEL
+  // ---------------------------------------------------------------------------
+
+  String get reminderService => _prefs?.getString('reminder_service') ?? 'google_tasks';
+  set reminderService(String v) {
+    _prefs?.setString('reminder_service', v);
+    _notify();
+  }
+
+  static const Map<String, String> reminderServices = {
+    'google_tasks': 'Google Tasks',
+    'samsung_reminders': 'Samsung Reminders',
+    'todoist': 'Todoist',
   };
 
   // ---------------------------------------------------------------------------
@@ -84,6 +99,24 @@ class SettingsService {
     'samsung': 'Samsung Notes',
     'notion': 'Notion',
   };
+
+  // ---------------------------------------------------------------------------
+  // NOTION
+  // ---------------------------------------------------------------------------
+
+  String get notionToken => _prefs?.getString('notion_token') ?? '';
+  set notionToken(String v) {
+    _prefs?.setString('notion_token', v);
+    _notify();
+  }
+
+  String get notionPageId => _prefs?.getString('notion_page_id') ?? '';
+  set notionPageId(String v) {
+    _prefs?.setString('notion_page_id', v);
+    _notify();
+  }
+
+  bool get notionConfigured => notionToken.isNotEmpty && notionPageId.isNotEmpty;
 
   // ---------------------------------------------------------------------------
   // NAVIGATION
