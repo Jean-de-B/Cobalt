@@ -64,6 +64,8 @@ class BleService {
   /// Version firmware de l'appareil connecté (ex: "1.0.0")
   String? _firmwareVersion;
   String? get firmwareVersion => _firmwareVersion;
+  final _firmwareVersionController = StreamController<String?>.broadcast();
+  Stream<String?> get firmwareVersionStream => _firmwareVersionController.stream;
 
   /// État actuel de la connexion
   BleConnectionState _connectionState = BleConnectionState.disconnected;
@@ -322,6 +324,9 @@ class BleService {
     await FlutterBluePlus.startScan(
       timeout: Duration(seconds: timeout),
       androidUsesFineLocation: true,
+      withRemoteIds: (autoConnect && _selectedDeviceId != null)
+          ? [_selectedDeviceId!]
+          : const [],
     );
 
     // Après le timeout, repasser en disconnected si toujours en scan
@@ -746,6 +751,7 @@ class BleService {
       final value = await _fwVersionCharacteristic!.read();
       if (value.length >= 3) {
         _firmwareVersion = '${value[0]}.${value[1]}.${value[2]}';
+        _firmwareVersionController.add(_firmwareVersion);
         // ignore: avoid_print
         print('BLE: Firmware version = $_firmwareVersion');
       }
@@ -1011,6 +1017,7 @@ class BleService {
     _fwVersionCharacteristic = null;
     _debugLogCharacteristic = null;
     _firmwareVersion = null;
+    _firmwareVersionController.add(null);
     _batteryLevel = -1;
     _isCharging = false;
     _batteryLevelController.add(-1);
@@ -1038,7 +1045,7 @@ class BleService {
   static const int _fastScanDurationSec = 30;
   /// Phase 2 : scan périodique en veille
   static const int _slowScanDurationSec = 15;
-  static const int _slowRetryIntervalSec = 60;
+  static const int _slowRetryIntervalSec = 30;
   /// Nombre de cycles rapides avant de passer en veille
   static const int _maxFastCycles = 6; // 6 × 30s = 3 minutes
 
@@ -1073,10 +1080,10 @@ class BleService {
   /// Scan avec durée adaptée au cycle (long en rapide, court en veille).
   /// Pas de pause inter-scan en mode rapide : on enchaîne immédiatement.
   Future<void> _startContinuousScan() async {
-    if (!_autoReconnectEnabled) return;
-    if (_selectedDeviceId == null) return;
+    if (!_autoReconnectEnabled) { return; }
+    if (_selectedDeviceId == null) { return; }
     if (_connectionState == BleConnectionState.connected ||
-        _connectionState == BleConnectionState.connecting) return;
+        _connectionState == BleConnectionState.connecting) { return; }
 
     final bool isFast = _reconnectAttempts <= _maxFastCycles;
     final int scanDuration = isFast ? _fastScanDurationSec : _slowScanDurationSec;
@@ -1112,6 +1119,7 @@ class BleService {
     await FlutterBluePlus.startScan(
       timeout: Duration(seconds: scanDuration),
       androidUsesFineLocation: true,
+      withRemoteIds: [_selectedDeviceId!],
     );
 
     // Attendre la fin du scan
@@ -1135,8 +1143,10 @@ class BleService {
     _btStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       if (state == BluetoothAdapterState.on) {
         // BT vient d'être activé → relancer la reconnexion si device connu
+        // Note: après une coupure BT, l'état est 'disabled' (pas 'disconnected')
         if (_selectedDeviceId != null &&
-            _connectionState == BleConnectionState.disconnected) {
+            (_connectionState == BleConnectionState.disconnected ||
+             _connectionState == BleConnectionState.disabled)) {
           // ignore: avoid_print
           print('BLE: Adaptateur BT activé → relance reconnexion');
           _reconnectAttempts = 0;
@@ -1161,9 +1171,25 @@ class BleService {
 
   /// Déclenche immédiatement un scan de reconnexion (depuis foreground resume)
   void triggerReconnect() {
-    if (_selectedDeviceId != null &&
-        (_connectionState == BleConnectionState.disconnected ||
-         _connectionState == BleConnectionState.scanning)) {
+    if (_selectedDeviceId == null) { return; }
+
+    if (_connectionState == BleConnectionState.disabled) {
+      // BT potentiellement réactivé — vérifier l'état réel avant de scanner
+      FlutterBluePlus.adapterState.first.then((btState) {
+        if (btState == BluetoothAdapterState.on) {
+          // ignore: avoid_print
+          print('BLE: triggerReconnect() depuis disabled, BT on → scan immédiat');
+          _reconnectAttempts = 0;
+          _autoReconnectEnabled = true;
+          _updateState(BleConnectionState.scanning);
+          _startContinuousScan();
+        }
+      });
+      return;
+    }
+
+    if (_connectionState == BleConnectionState.disconnected ||
+        _connectionState == BleConnectionState.scanning) {
       // ignore: avoid_print
       print('BLE: triggerReconnect() → scan immédiat');
       _reconnectTimer?.cancel();
@@ -1203,6 +1229,7 @@ class BleService {
     _batteryCharacteristic = null;
     _fwVersionCharacteristic = null;
     _firmwareVersion = null;
+    _firmwareVersionController.add(null);
     _batteryLevel = -1;
     _isCharging = false;
     _batteryLevelController.add(-1);

@@ -659,6 +659,24 @@ void BleServices::disable() {
     DEBUG_PRINTLN("[BLE] Disabled (advertising stopped)");
 }
 
+void BleServices::clearBondsAndRestartPairing() {
+    DEBUG_PRINTLN("[BLE] Effacement bonds → mode appairage general");
+
+    if (_advertising) {
+        Bluefruit.Advertising.stop();
+        _advertising = false;
+    }
+
+    // Supprime tous les bonds persistés en flash
+    Bluefruit.Periph.clearBonds();
+
+    // Repart en advertising général depuis la phase rapide
+    _fastAdvDone = false;
+    startAdvertising();
+
+    DEBUG_PRINTLN("[BLE] Advertising general relancé (prêt pour nouvel appairage)");
+}
+
 void BleServices::enable() {
     startAdvertising();
     DEBUG_PRINTLN("[BLE] Enabled (advertising started)");

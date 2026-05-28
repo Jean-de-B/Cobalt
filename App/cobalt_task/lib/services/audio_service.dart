@@ -1530,6 +1530,7 @@ class AudioService {
 
   /// Version firmware de l'appareil connecté (ex: "1.0.0")
   String? get firmwareVersion => _bleService.firmwareVersion;
+  Stream<String?> get firmwareVersionStream => _bleService.firmwareVersionStream;
 
   /// Accès au service BLE (pour l'écran debug et DFU)
   BleService get bleServiceInstance => _bleService;

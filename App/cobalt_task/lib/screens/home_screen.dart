@@ -657,10 +657,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             scrolledUnderElevation: 0,
             centerTitle: false,
             title: GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              ),
+              onTap: () {
+                final bleState = _audioService.bleConnectionState;
+                final isPaired = _audioService.selectedDeviceId != null;
+                final isConnected = bleState == BleConnectionState.connected ||
+                    bleState == BleConnectionState.syncing;
+                if (isPaired && !isConnected) {
+                  _scanAndPickDevice();
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  );
+                }
+              },
               child: const Text('Cobalt Task', style: AppTextStyles.heading),
             ),
             actions: [
@@ -1225,7 +1235,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 return OutlinedButton.icon(
                   onPressed: _scanAndPickDevice,
                   icon: const Icon(Icons.watch, size: 18),
-                  label: const Text('Connecter une montre'),
+                  label: Text(_audioService.selectedDeviceId != null
+                      ? 'Reconnecter la montre'
+                      : 'Appairer une montre'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.accent,
                     side: const BorderSide(color: AppColors.accent),
@@ -1280,7 +1292,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // Démarre le scan rapide continu
+    // Montre déjà appairée → relancer la reconnexion ciblée, pas de picker
+    if (_audioService.selectedDeviceId != null) {
+      _audioService.triggerBleReconnect();
+      return;
+    }
+
+    // Aucune montre appairée → mode appairage (première liaison)
     _audioService.startBrowseScan();
 
     if (!mounted) return;
@@ -1289,7 +1307,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       backgroundColor: AppColors.surface,
       builder: (context) => _DevicePickerSheet(audioService: _audioService),
     ).whenComplete(() {
-      // Arrête le scan quand la fiche se ferme
       _audioService.stopBrowseScan();
     });
   }
@@ -1363,7 +1380,7 @@ class _DevicePickerSheetState extends State<_DevicePickerSheet> {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
             child: Row(
               children: [
-                const Text('Appareils à proximité', style: AppTextStyles.heading),
+                const Text('Appairer une montre', style: AppTextStyles.heading),
                 const Spacer(),
                 const SizedBox(
                   width: 16, height: 16,

@@ -139,11 +139,47 @@ void saveToFlash() {
         return;
     }
 
-    if (flashStorage.saveCurrentRecording()) {
+    // 2 flashs rouges lents = flash non initialisée (QSPI échoué au boot)
+    if (!flashStorage.isInitialized()) {
+        DEBUG_PRINTLN("[FLASH] Non initialisé (init QSPI échouée au boot)!");
+        for (int i = 0; i < 2; i++) {
+            ledController.setColorImmediate(LED_COLOR_RED);
+            delay(400);
+            ledController.off();
+            delay(400);
+        }
+        powerManager.flashDeepPowerDown();
+        return;
+    }
+
+    bool saved = flashStorage.saveCurrentRecording();
+
+    // Reformat + réessai automatique si LittleFS est corrompu
+    if (!saved) {
+        DEBUG_PRINTLN("[FLASH] Échec écriture — reformat LittleFS + réessai...");
+        flashStorage.reformat();
+        saved = flashStorage.saveCurrentRecording();
+    }
+
+    if (saved) {
         DEBUG_PRINTF("[FLASH] Sauvegardé (offline). En attente: %lu\n",
                        flashStorage.getPendingCount());
+        // 3 flashs verts = sauvegarde OK
+        for (int i = 0; i < 3; i++) {
+            ledController.setColorImmediate(LED_COLOR_GREEN);
+            delay(150);
+            ledController.off();
+            delay(150);
+        }
     } else {
-        DEBUG_PRINTLN("[FLASH] Erreur de sauvegarde!");
+        DEBUG_PRINTLN("[FLASH] Erreur de sauvegarde (même après reformat)!");
+        // 5 flashs rouges = échec persistant
+        for (int i = 0; i < 5; i++) {
+            ledController.setColorImmediate(LED_COLOR_RED);
+            delay(100);
+            ledController.off();
+            delay(100);
+        }
     }
 
     powerManager.flashDeepPowerDown();
@@ -712,12 +748,11 @@ void loop() {
 
             case BTN_EVENT_SINGLE:
             case BTN_EVENT_DOUBLE:
-            case BTN_EVENT_TRIPLE:
                 if (recording && timedRecordingDuration == 0) {
                     DEBUG_PRINTF("[BTN] Clic %d détecté → annulation enregistrement\n", btnEvent);
-                    pdmAudio.stopCapture();   // Arrête le PDM (plus de nouvelles IRQ)
-                    recording = false;         // Flag volatile — ISR pending verra false
-                    delayMicroseconds(100);    // Laisse une éventuelle ISR en cours se terminer
+                    pdmAudio.stopCapture();
+                    recording = false;
+                    delayMicroseconds(100);
                     audioStorage.clear();
                     totalSamples = 0;
                     ledController.off();
@@ -725,6 +760,33 @@ void loop() {
                 if (bleServices.isConnected()) {
                     bleServices.sendButtonEvent((uint8_t)btnEvent);
                     DEBUG_PRINTF("[BTN] Event %d envoyé via BLE\n", btnEvent);
+                } else {
+                    bleServices.startAdvertising();
+                    ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
+                    DEBUG_PRINTLN("[BTN] Single press hors connexion → restart advertising");
+                }
+                break;
+
+            case BTN_EVENT_TRIPLE:
+                if (recording && timedRecordingDuration == 0) {
+                    DEBUG_PRINTLN("[BTN] Triple clic → annulation enregistrement");
+                    pdmAudio.stopCapture();
+                    recording = false;
+                    delayMicroseconds(100);
+                    audioStorage.clear();
+                    totalSamples = 0;
+                    ledController.off();
+                }
+                if (bleServices.isConnected()) {
+                    // Connecté : envoyer l'événement au téléphone comme d'habitude
+                    bleServices.sendButtonEvent(BTN_EVENT_TRIPLE);
+                    DEBUG_PRINTLN("[BTN] Triple press → event BLE envoyé");
+                } else {
+                    // Déconnecté : effacer le bond et passer en mode appairage
+                    DEBUG_PRINTLN("[BTN] Triple press hors connexion → dissociation");
+                    bleServices.clearBondsAndRestartPairing();
+                    // LED blanche clignotante rapide = "en attente d'appairage"
+                    ledController.set(LED_COLOR_WHITE, LED_MODE_BLINK_FAST);
                 }
                 break;
 
@@ -869,14 +931,9 @@ void loop() {
     if (advStoppedFlag) {
         advStoppedFlag = false;
         if (!bleServices.isConnected() && !recording && !transferring && !powerManager.isCharging()) {
-            if (flashStorage.hasPendingFiles()) {
-                // Notes en attente : relance l'advertising pour permettre la reconnexion
-                DEBUG_PRINTLN("[PWR] Notes en attente → redémarre advertising");
-                bleServices.startAdvertising();
-            } else {
-                DEBUG_PRINTLN("[PWR] Advertising terminé sans connexion → System OFF");
-                enterSystemOff();
-            }
+            // Notes offline synchro au prochain réveil — pas de redémarrage en boucle
+            DEBUG_PRINTLN("[PWR] Advertising terminé sans connexion → System OFF");
+            enterSystemOff();
         } else if (powerManager.isCharging() && !bleServices.isConnected()) {
             // USB connecté mais pas de BLE: relancer l'advertising
             DEBUG_PRINTLN("[PWR] Advertising terminé mais USB connecté → restart advertising");
@@ -885,10 +942,10 @@ void loop() {
     }
 
     // === AUTO-OFF: SYSTEM OFF APRÈS INACTIVITÉ ===
-    // Ne pas dormir tant que des notes offline attendent d'être synchronisées :
-    // le téléphone doit pouvoir se reconnecter pendant la fenêtre d'advertising.
+    // Une seule fenêtre d'advertising par réveil : après SLEEP_TIMEOUT_MS sans connexion → sleep.
+    // Les notes offline en attente seront synchronisées au prochain réveil connecté.
     if (!recording && !transferring && !bleServices.isConnected() && !powerManager.isCharging()) {
-        if (now - lastActivityTime >= SLEEP_TIMEOUT_MS && !flashStorage.hasPendingFiles()) {
+        if (now - lastActivityTime >= SLEEP_TIMEOUT_MS) {
             enterSystemOff();
         }
     }

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../constants/app_constants.dart';
 import '../screens/debug_screen.dart';
@@ -38,15 +37,14 @@ class BleStatusIndicator extends StatelessWidget {
     return StreamBuilder<BleConnectionState>(
       stream: audioService.bleConnectionStateStream,
       initialData: audioService.bleConnectionState,
-      builder: (context, snapshot) {
-        final state = snapshot.data ?? BleConnectionState.disconnected;
+      builder: (context, stateSnapshot) {
+        final state = stateSnapshot.data ?? BleConnectionState.disconnected;
         return _buildIndicator(context, state);
       },
     );
   }
 
   Widget _buildIndicator(BuildContext context, BleConnectionState state) {
-    // Déterminer la couleur et l'icône selon l'état
     final (color, icon, tooltip) = switch (state) {
       BleConnectionState.disabled => (
           AppColors.bleDisconnected,
@@ -56,12 +54,16 @@ class BleStatusIndicator extends StatelessWidget {
       BleConnectionState.disconnected => (
           AppColors.bleDisconnected,
           Icons.watch,
-          'Montre déconnectée - Appuyez pour scanner',
+          audioService.selectedDeviceId != null
+              ? 'Appuyez pour relancer la connexion'
+              : 'Appuyez pour appairer une montre',
         ),
       BleConnectionState.scanning => (
           AppColors.bleConnecting,
           Icons.watch,
-          'Recherche de la montre...',
+          audioService.selectedDeviceId != null
+              ? 'Reconnexion à ${audioService.connectedDeviceName ?? "la montre"}...'
+              : 'Recherche de la montre...',
         ),
       BleConnectionState.connecting => (
           AppColors.bleConnecting,
@@ -85,10 +87,13 @@ class BleStatusIndicator extends StatelessWidget {
         ),
     };
 
-    // Animation pour les états de transition
     final isAnimated = state == BleConnectionState.scanning ||
         state == BleConnectionState.connecting ||
         state == BleConnectionState.syncing;
+
+    final iconWidget = isAnimated
+        ? _AnimatedIcon(icon: icon, color: color, size: 18)
+        : Icon(icon, color: color, size: 18);
 
     return Tooltip(
       message: tooltip,
@@ -96,253 +101,175 @@ class BleStatusIndicator extends StatelessWidget {
         onTap: () => _handleTap(context, state),
         borderRadius: BorderRadius.circular(20),
         child: Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: isAnimated
-              ? _AnimatedIcon(icon: icon, color: color, size: 21.6)
-              : Icon(icon, color: color, size: 21.6),
+          padding: const EdgeInsets.all(8),
+          child: iconWidget,
         ),
       ),
     );
   }
 
   void _handleTap(BuildContext context, BleConnectionState state) {
-    switch (state) {
-      case BleConnectionState.connected:
-        _showConnectionMenu(context);
-        break;
-      default:
-        // Toujours ouvrir le picker (scan, connecting, disconnected, disabled, error)
-        if (onScanRequested != null) {
-          onScanRequested!();
-        } else {
-          audioService.startBleScan();
-        }
-        break;
+    if (audioService.selectedDeviceId != null) {
+      _showConnectionMenu(context, state);
+    } else {
+      if (state == BleConnectionState.disabled) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Activez le Bluetooth pour vous connecter'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      if (onScanRequested != null) {
+        onScanRequested!();
+      } else {
+        audioService.startBleScan();
+      }
     }
   }
 
-  void _showConnectionMenu(BuildContext context) {
-    final fwVersion = audioService.firmwareVersion;
+  void _showConnectionMenu(BuildContext context, BleConnectionState state) {
+    final isConnected = state == BleConnectionState.connected;
+    final nameColor = isConnected ? AppColors.bleConnected : AppColors.textSecondary;
     final deviceName = audioService.connectedDeviceName ?? 'Cobalt';
 
-    // Lancer le browse scan pour afficher les autres montres en dessous
-    audioService.startBrowseScan();
+    // Relance un scan immédiat si pas connecté (couvre disabled, disconnected, scanning, error)
+    if (state != BleConnectionState.connected &&
+        state != BleConnectionState.connecting) {
+      audioService.triggerBleReconnect();
+    }
 
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
       builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header : montre + nom + version | MAJ | déconnecter
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-              child: Row(
-                children: [
-                  const Icon(Icons.watch, color: AppColors.bleConnected, size: 18),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          deviceName,
-                          style: const TextStyle(
-                            color: AppColors.bleConnected,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
-                          ),
-                        ),
-                        if (fwVersion != null)
-                          Text(
-                            'v$fwVersion',
-                            style: AppTextStyles.metadata.copyWith(fontSize: 11),
-                          ),
-                      ],
-                    ),
-                  ),
-                  // MAJ firmware
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      audioService.stopBrowseScan();
-                      _showDfuDialog(context);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.bleSyncing.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.system_update, size: 14, color: AppColors.bleSyncing),
-                          const SizedBox(width: 4),
-                          Text('MAJ', style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.bleSyncing,
-                          )),
-                        ],
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+          child: Row(
+            children: [
+              Icon(Icons.watch, color: nameColor, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      deviceName,
+                      style: TextStyle(
+                        color: nameColor,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Debug firmware
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      audioService.stopBrowseScan();
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DebugScreen(
-                            bleService: audioService.bleServiceInstance,
-                          ),
-                        ),
-                      );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.terminal, size: 14, color: Colors.orange),
-                          SizedBox(width: 4),
-                          Text('Debug', style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.orange,
-                          )),
-                        ],
-                      ),
+                    StreamBuilder<String?>(
+                      stream: audioService.firmwareVersionStream,
+                      initialData: audioService.firmwareVersion,
+                      builder: (_, snap) {
+                        final v = snap.data;
+                        if (v == null) return const SizedBox.shrink();
+                        return Text(
+                          'v$v',
+                          style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                        );
+                      },
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Oublier la montre
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      audioService.stopBrowseScan();
-                      audioService.disconnectBle();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.link_off, size: 14, color: Colors.red),
-                          SizedBox(width: 4),
-                          Text('Oublier', style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.red,
-                          )),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(color: AppColors.border, height: 1),
-            // Autres montres visibles
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Autres appareils à proximité',
-                  style: AppTextStyles.metadata.copyWith(fontSize: 11),
+                  ],
                 ),
               ),
-            ),
-            StreamBuilder<List<ScanResult>>(
-              stream: audioService.discoveredDevicesStream,
-              initialData: audioService.discoveredDevices,
-              builder: (context, snapshot) {
-                final devices = (snapshot.data ?? [])
-                    .where((d) {
-                      final name = d.advertisementData.advName.isNotEmpty
-                          ? d.advertisementData.advName
-                          : d.device.platformName;
-                      // Exclure la montre déjà connectée
-                      return name != deviceName && name.isNotEmpty;
-                    })
-                    .toList();
-
-                if (devices.isEmpty) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const SizedBox(
-                          width: 12, height: 12,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 1.5,
-                            valueColor: AlwaysStoppedAnimation<Color>(AppColors.textTertiary),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text('Recherche...', style: AppTextStyles.metadata.copyWith(fontSize: 11)),
-                      ],
+              // MAJ firmware
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showDfuDialog(context);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.bleSyncing.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.system_update, size: 14, color: AppColors.bleSyncing),
+                      const SizedBox(width: 4),
+                      Text('MAJ', style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.bleSyncing,
+                      )),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Debug
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DebugScreen(
+                        bleService: audioService.bleServiceInstance,
+                      ),
                     ),
                   );
-                }
-
-                return ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 160),
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: devices.length,
-                    itemBuilder: (context, index) {
-                      final result = devices[index];
-                      final name = result.advertisementData.advName.isNotEmpty
-                          ? result.advertisementData.advName
-                          : result.device.platformName;
-                      final isCobalt = name.toLowerCase().startsWith('cobalt');
-
-                      return ListTile(
-                        dense: true,
-                        visualDensity: const VisualDensity(vertical: -2),
-                        leading: Icon(
-                          isCobalt ? Icons.watch : Icons.bluetooth,
-                          size: 18,
-                          color: isCobalt ? AppColors.textSecondary : AppColors.textTertiary,
-                        ),
-                        title: Text(name, style: AppTextStyles.metadata.copyWith(
-                          color: isCobalt ? AppColors.textPrimary : AppColors.textSecondary,
-                          fontSize: 12,
-                        )),
-                        trailing: Text('${result.rssi} dBm',
-                          style: AppTextStyles.metadata.copyWith(fontSize: 10)),
-                        onTap: isCobalt ? () {
-                          Navigator.pop(sheetContext);
-                          audioService.stopBrowseScan();
-                          audioService.connectToBleDevice(result.device, deviceName: name);
-                        } : null,
-                      );
-                    },
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                );
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.terminal, size: 14, color: Colors.orange),
+                      SizedBox(width: 4),
+                      Text('Debug', style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.orange,
+                      )),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Oublier
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  audioService.disconnectBle();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.link_off, size: 14, color: Colors.red),
+                      SizedBox(width: 4),
+                      Text('Oublier', style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.red,
+                      )),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ).whenComplete(() => audioService.stopBrowseScan());
+    );
   }
 
   void _showDfuDialog(BuildContext context) {

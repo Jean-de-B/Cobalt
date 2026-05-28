@@ -165,6 +165,12 @@ public:
     void enable();
 
     /**
+     * @brief Efface tous les bonds et relance un advertising général (mode appairage).
+     * À appeler sur triple press hors connexion pour permettre un ré-appairage.
+     */
+    void clearBondsAndRestartPairing();
+
+    /**
      * @brief Passe en mode connexion rapide (pour transfert)
      * Intervalle 15-30ms - consomme plus mais transfert rapide
      */

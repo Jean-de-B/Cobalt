@@ -90,6 +90,11 @@ public:
      */
     uint32_t getFileCount() const { return _fileCount; }
 
+    /**
+     * @brief Vrai si l'init LittleFS a réussi au boot
+     */
+    bool isInitialized() const { return _initialized; }
+
 private:
     bool _initialized = false;
     uint32_t _nextIndex = 1;        // Prochain index de fichier

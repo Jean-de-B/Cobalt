@@ -16,7 +16,7 @@
 // =============================================================================
 
 // Bouton Push-to-Talk
-#define PIN_BUTTON          D1          // Bouton externe principal (PTT)
+#define PIN_BUTTON          D9          // Bouton externe principal (PTT)
 #define PIN_BUTTON_VOL_UP   D3          // Bouton Volume Up (anciennement D2)
 #define PIN_BUTTON_VOL_DOWN D2          // Bouton Volume Down (anciennement D3)
 #define BUTTON_ACTIVE_LOW   true        // true si le bouton tire vers GND
@@ -152,7 +152,7 @@
 
 // Timeout avant System OFF après inactivité
 // Condition: pas de BLE connecté, pas de bouton, pas de transfert
-#define SLEEP_TIMEOUT_MS      10000   // 10 secondes (identique debug/production)
+#define SLEEP_TIMEOUT_MS      90000   // 90 secondes (couvre un cycle de scan app en mode veille)
 
 // Durée d'affichage du statut batterie au réveil
 #define BATTERY_LED_DURATION_MS 1500    // 1.5 secondes

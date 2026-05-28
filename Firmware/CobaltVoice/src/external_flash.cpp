@@ -34,6 +34,9 @@ static Adafruit_SPIFlashBase        _qspiFlash(&_qspiTransport);
 #define QSPI_TOTAL_SIZE     (2 * 1024 * 1024)   // 2 MB
 #define QSPI_BLOCK_COUNT    (QSPI_TOTAL_SIZE / QSPI_SECTOR_SIZE)  // 512 blocs
 
+// Buffer rebond pour le chemin "bypass" de lfs_cache_prog (doit précéder les callbacks)
+static uint8_t __attribute__((aligned(4))) _lfsBounceBuf[QSPI_PAGE_SIZE]; // 256 B
+
 // === CALLBACKS LittleFS ===
 
 static int _qspi_read(const struct lfs_config *c, lfs_block_t block,
@@ -53,11 +56,27 @@ static int _qspi_prog(const struct lfs_config *c, lfs_block_t block,
                        lfs_off_t off, const void *buffer, lfs_size_t size) {
     (void) c;
     uint32_t addr = block * QSPI_SECTOR_SIZE + off;
-    uint32_t wr = _qspiFlash.writeBuffer(addr, (const uint8_t*)buffer, size);
+    const uint8_t* buf = (const uint8_t*)buffer;
+
+    // EasyDMA QSPI (nRF52840) exige un buffer source aligné sur 4 octets.
+    // Le chemin "bypass" de lfs_cache_prog passe le pointeur utilisateur brut
+    // (ex: data+222 → non aligné). On rebondit via _lfsBounceBuf si besoin.
+    if ((uint32_t)buf & 3) {
+        if (size > sizeof(_lfsBounceBuf)) {
+            DEBUG_PRINTF("[LFS-PROG] ERR taille rebond %lu > %lu\n", size, (uint32_t)sizeof(_lfsBounceBuf));
+            return LFS_ERR_IO;
+        }
+        DEBUG_PRINTF("[LFS-PROG] Rebond alignement buf=0x%08lX align=%lu size=%lu\n",
+                     (uint32_t)buf, (uint32_t)buf & 3, size);
+        memcpy(_lfsBounceBuf, buf, size);
+        buf = _lfsBounceBuf;
+    }
+
+    uint32_t wr = _qspiFlash.writeBuffer(addr, buf, size);
     if (wr != size) {
         uint32_t qspiStatus = NRF_QSPI->STATUS;
         DEBUG_PRINTF("[LFS-PROG] FAIL block=%lu off=%lu size=%lu wr=%lu\n"
-                     "  addr=0x%08lX buf=0x%08lX align=%lu qspiStat=0x%08lX\n",
+                     "  addr=0x%08lX origBuf=0x%08lX align=%lu qspiStat=0x%08lX\n",
                      (uint32_t)block, (uint32_t)off, (uint32_t)size, wr,
                      addr, (uint32_t)buffer, (uint32_t)buffer & 3, qspiStatus);
         return LFS_ERR_IO;
@@ -80,6 +99,16 @@ static int _qspi_sync(const struct lfs_config *c) {
     return LFS_ERR_OK;
 }
 
+// === BUFFERS LFS STATIQUES (alignés 4 octets pour EasyDMA QSPI nRF52840) ===
+// Le périphérique QSPI du nRF52840 utilise EasyDMA : le pointeur buffer DOIT
+// être aligné sur 4 octets. Si prog_buffer est NULL, LittleFS alloue sur la
+// pile avec un alignement non garanti → writeBuffer() échoue silencieusement.
+static uint8_t __attribute__((aligned(4))) _lfsReadBuf[QSPI_PAGE_SIZE];       // 256 B
+static uint8_t __attribute__((aligned(4))) _lfsProgBuf[QSPI_PAGE_SIZE];       // 256 B
+static uint8_t __attribute__((aligned(4))) _lfsLookaheadBuf[128];             // 128 B (safe v1+v2)
+static uint8_t __attribute__((aligned(4))) _lfsFileBuf[QSPI_PAGE_SIZE];       // 256 B (cache fichier v1)
+// _lfsBounceBuf est déclaré avant les callbacks (ligne ~38)
+
 // === CONFIGURATION LFS STATIQUE ===
 static struct lfs_config _ExternalFSConfig = {
     .context = NULL,
@@ -95,10 +124,10 @@ static struct lfs_config _ExternalFSConfig = {
     .block_count    = QSPI_BLOCK_COUNT,    // 512 blocs (= 2MB / 4KB)
     .lookahead      = 128,
 
-    .read_buffer      = NULL,
-    .prog_buffer      = NULL,
-    .lookahead_buffer = NULL,
-    .file_buffer      = NULL
+    .read_buffer      = _lfsReadBuf,
+    .prog_buffer      = _lfsProgBuf,
+    .lookahead_buffer = _lfsLookaheadBuf,
+    .file_buffer      = _lfsFileBuf
 };
 
 // === INSTANCES GLOBALES ===
