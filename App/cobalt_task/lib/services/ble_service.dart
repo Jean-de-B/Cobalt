@@ -235,7 +235,7 @@ class BleService {
     }
 
     // Vérifier si le Bluetooth est activé
-    final adapterState = await FlutterBluePlus.adapterState.first;
+    final adapterState = FlutterBluePlus.adapterStateNow;
     if (adapterState != BluetoothAdapterState.on) {
       _updateState(BleConnectionState.disabled);
       return false;

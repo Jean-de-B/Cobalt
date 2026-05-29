@@ -92,7 +92,7 @@ class AudioConstants {
   static const String cvoxMagic = 'CVOX';
 
   /// Taille du header CVOX (en bytes)
-  static const int cvoxHeaderSize = 34;
+  static const int cvoxHeaderSize = 36;
 }
 
 /// -----------------------------------------------------------------------------

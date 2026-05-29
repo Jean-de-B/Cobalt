@@ -164,7 +164,7 @@ class CvoxHeader {
 
 class AdpcmDecoder {
   /// Taille du header CVOX en bytes
-  static const int cvoxHeaderSize = 34;
+  static const int cvoxHeaderSize = 36;
 
   /// Taille du header WAV en bytes
   static const int wavHeaderSize = 44;

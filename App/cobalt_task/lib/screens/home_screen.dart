@@ -1286,7 +1286,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   Future<void> _scanAndPickDevice() async {
-    final btState = await FlutterBluePlus.adapterState.first;
+    final btState = FlutterBluePlus.adapterStateNow;
     if (btState != BluetoothAdapterState.on) {
       if (mounted) _showBluetoothRequiredDialog();
       return;

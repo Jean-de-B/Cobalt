@@ -25,11 +25,11 @@ typedef struct __attribute__((packed)) {
     int16_t  initialSample;     // Sample initial pour décodage - offset 20-21
     int8_t   initialIndex;      // Index initial pour décodage - offset 22
     uint8_t  reserved1;         // 0x00 = live (direct BLE), 0x01 = différé (depuis flash offline) - offset 23
-    uint8_t  reserved2[10];     // Padding supplémentaire - offset 24-33
+    uint8_t  reserved2[12];     // Padding supplémentaire - offset 24-35 (12 bytes pour alignement 4 octets)
 } AudioFileHeader_t;
 
 // Vérifie la taille du header à la compilation
-static_assert(sizeof(AudioFileHeader_t) == 34, "AudioFileHeader_t must be 34 bytes");
+static_assert(sizeof(AudioFileHeader_t) == 36, "AudioFileHeader_t must be 36 bytes");
 
 #define AUDIO_HEADER_SIZE sizeof(AudioFileHeader_t)
 

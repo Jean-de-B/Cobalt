@@ -707,7 +707,7 @@ void BleServices::setIdleConnectionMode() {
     params.min_conn_interval = BLE_IDLE_CONN_INTERVAL_MIN;
     params.max_conn_interval = BLE_IDLE_CONN_INTERVAL_MAX;
     params.slave_latency     = 4;  // Skip up to 4 events (~2-4s effective interval)
-    params.conn_sup_timeout  = BLE_SUPERVISION_TIMEOUT;
+    params.conn_sup_timeout  = BLE_IDLE_SUPERVISION_TIMEOUT;
 
     uint32_t err = sd_ble_gap_conn_param_update(_connHandle, &params);
     _connMode = CONN_MODE_IDLE;

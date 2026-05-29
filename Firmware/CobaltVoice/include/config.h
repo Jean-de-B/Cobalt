@@ -127,6 +127,7 @@
 
 // Supervision timeout & slave latency
 #define BLE_SUPERVISION_TIMEOUT     400   // 400 * 10ms = 4s
+#define BLE_IDLE_SUPERVISION_TIMEOUT 1200 // 1200 * 10ms = 12s (requis: > (1+latency) × max_interval × 2)
 #define BLE_SLAVE_LATENCY           0     // Répondre à chaque event
 #define BLE_CONN_SETUP_DELAY_MS     500   // Délai avant PHY/DLE après connexion
 
