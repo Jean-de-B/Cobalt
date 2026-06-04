@@ -96,6 +96,10 @@ class BleService {
   /// Flag pour activer/désactiver la reconnexion automatique
   bool _autoReconnectEnabled = true;
 
+  /// Adresse MAC du device avant entrée en mode DFU (fallback scan)
+  String? _dfuTargetAddress;
+  String? get dfuTargetAddress => _dfuTargetAddress;
+
   /// Timer de reconnexion
   Timer? _reconnectTimer;
 
@@ -761,8 +765,9 @@ class BleService {
     }
   }
 
-  /// Envoie la commande DFU pour faire entrer l'appareil en mode bootloader
-  /// Retourne true si la commande a été envoyée
+  /// Envoie la commande DFU pour faire entrer l'appareil en mode bootloader.
+  /// Supprime le bond BLE avant que DfuTarg n'apparaisse, afin d'éviter que
+  /// Android tente un chiffrement avec les anciennes clés (= connexion rejetée).
   Future<bool> triggerDfuMode() async {
     if (_rxCharacteristic == null || !isConnected) {
       // ignore: avoid_print
@@ -770,9 +775,10 @@ class BleService {
       return false;
     }
 
-    final deviceAddress = _connectedDevice!.remoteId.str;
+    final device = _connectedDevice!;
+    _dfuTargetAddress = device.remoteId.str;
     // ignore: avoid_print
-    print('BLE DFU: Envoi commande DFU (0xFD) à $deviceAddress');
+    print('BLE DFU: Envoi commande DFU (0xFD) à $_dfuTargetAddress');
 
     // Désactiver la reconnexion automatique pendant le DFU
     _autoReconnectEnabled = false;
@@ -784,7 +790,25 @@ class BleService {
         withoutResponse: true,
       );
       // ignore: avoid_print
-      print('BLE DFU: Commande envoyée, device va redémarrer en mode DFU');
+      print('BLE DFU: Commande envoyée, suppression du bond dans 300ms...');
+
+      // Le firmware exécute disconnect(600ms) + GPREGRET + reset = ~800ms total.
+      // On supprime le bond rapidement (avant que le bootloader commence à advertiser)
+      // pour qu'Android ne tente pas de chiffrer avec les anciennes clés.
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      // Supprimer le bond AVANT que DfuTarg soit visible : Android ne tentera
+      // plus de chiffrer la connexion avec les clés du device applicatif.
+      try {
+        await device.removeBond();
+        // ignore: avoid_print
+        print('BLE DFU: Bond supprimé pour $_dfuTargetAddress');
+      } catch (e) {
+        // removeBond peut échouer si déjà déconnecté — ignoré car non bloquant
+        // ignore: avoid_print
+        print('BLE DFU: removeBond ignoré: $e');
+      }
+
       return true;
     } catch (e) {
       // ignore: avoid_print
@@ -794,18 +818,18 @@ class BleService {
     }
   }
 
-  /// Scanne pour trouver le device en mode DFU (bootloader Adafruit = "DfuTarg")
-  /// Retourne l'adresse MAC du DFU target, ou null si non trouvé
+  /// Scanne pour trouver le device en mode DFU (bootloader Adafruit = "DfuTarg").
   ///
-  /// Détection par nom ("DfuTarg", "Dfu") OU par service UUID Nordic DFU (0xFE59)
+  /// Trois critères de détection :
+  ///   1. Nom contient "dfu" ou "dfutarg"
+  ///   2. Service UUID 0xFE59 (Nordic Secure DFU) ou 0x1530 (Adafruit Legacy DFU)
+  ///   3. Même adresse que le device applicatif (bootloader Adafruit garde l'adresse)
   Future<String?> scanForDfuTarget({int timeoutSeconds = 20}) async {
     // ignore: avoid_print
-    print('BLE DFU: Scan pour DfuTarg (timeout: ${timeoutSeconds}s)...');
+    print('BLE DFU: Scan pour DfuTarg (timeout: ${timeoutSeconds}s)'
+        '${_dfuTargetAddress != null ? " | adresse connue: $_dfuTargetAddress" : ""}...');
 
     await FlutterBluePlus.stopScan();
-
-    // UUID du service Nordic Secure DFU
-    const nordicDfuServiceUuid = 'fe59';
 
     final completer = Completer<String?>();
     StreamSubscription? sub;
@@ -822,7 +846,7 @@ class BleService {
             .map((e) => e.toString().toLowerCase())
             .toList();
 
-        // Log TOUS les devices trouvés (une seule fois par adresse)
+        // Log tous les devices (une seule fois par adresse)
         if (!loggedDevices.contains(addr)) {
           loggedDevices.add(addr);
           // ignore: avoid_print
@@ -834,14 +858,26 @@ class BleService {
             (name.toLowerCase().contains('dfutarg') ||
              name.toLowerCase().contains('dfu'));
 
-        // Critère 2: Advertise le service Nordic DFU (0xFE59)
+        // Critère 2: Service UUID DFU — 0xFE59 (Nordic Secure) ou 0x1530 (Adafruit Legacy)
         final serviceMatch = serviceUuids.any((uuid) =>
-            uuid.contains(nordicDfuServiceUuid));
+            uuid.contains('fe59') || uuid.contains('1530'));
 
-        if (nameMatch || serviceMatch) {
+        // Critère 3: Même adresse que le device applicatif.
+        // Le bootloader Adafruit conserve l'adresse BLE.
+        // On vérifie l'advName (nom réel dans le paquet advertising), PAS le name
+        // combiné : Android peut cacher "Cobalt XXXX" en platformName même quand
+        // le bootloader n'émet aucun nom — ce qui bloquerait le critère à tort.
+        final isNormalAppAdv = advName.toLowerCase().startsWith('cobalt');
+        final addressMatch = _dfuTargetAddress != null &&
+            addr == _dfuTargetAddress &&
+            !isNormalAppAdv;
+
+        if (nameMatch || serviceMatch || addressMatch) {
           // ignore: avoid_print
           print('BLE DFU: *** DFU TARGET TROUVÉ! ***  "$name" @ $addr  '
-              '(name=${nameMatch ? "OUI" : "non"}, service=${serviceMatch ? "OUI" : "non"})');
+              '(name=${nameMatch ? "OUI" : "non"}, '
+              'service=${serviceMatch ? "OUI" : "non"}, '
+              'addr=${addressMatch ? "OUI" : "non"})');
           if (!completer.isCompleted) {
             completer.complete(addr);
           }
@@ -1189,11 +1225,13 @@ class BleService {
     }
 
     if (_connectionState == BleConnectionState.disconnected ||
-        _connectionState == BleConnectionState.scanning) {
+        _connectionState == BleConnectionState.scanning ||
+        _connectionState == BleConnectionState.error) {
       // ignore: avoid_print
       print('BLE: triggerReconnect() → scan immédiat');
       _reconnectTimer?.cancel();
       _reconnectAttempts = 0;
+      _autoReconnectEnabled = true;
       _startContinuousScan();
     }
   }

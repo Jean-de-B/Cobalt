@@ -80,7 +80,6 @@ bool BleServices::beginAfterBluefruit() {
     _postConnectState = PC_IDLE;
     _postConnectTimer = 0;
     _advertising = false;
-    _fastAdvDone = false;
     _connMode = CONN_MODE_FAST;
 
     // Transfert avec header
@@ -88,6 +87,7 @@ bool BleServices::beginAfterBluefruit() {
     _headerSize = 0;
     _headerPos = 0;
     _headerSent = true;
+    _transferRetryMs = 0;
 
     // Active Connection Event Extension
     ble_opt_t opt;
@@ -159,9 +159,9 @@ void BleServices::setupServices() {
     _fwVersionChar.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
     _fwVersionChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
     _fwVersionChar.setMaxLen(3);
+    _fwVersionChar.begin();
     uint8_t version[3] = { FIRMWARE_VERSION_MAJOR, FIRMWARE_VERSION_MINOR, FIRMWARE_VERSION_PATCH };
     _fwVersionChar.write(version, 3);
-    _fwVersionChar.begin();
 
     // Caractéristique Debug Log (Notify) — relaie les logs Serial via BLE
     _debugLogChar = BLECharacteristic(DEBUG_LOG_UUID);
@@ -185,65 +185,38 @@ void BleServices::setupAdvertising() {
     Bluefruit.ScanResponse.addService(_audioService);
     Bluefruit.ScanResponse.addService(_batteryService);
 
-    // Optim #3: Multi-phase advertising
-    // restartOnDisconnect=true pour relancer automatiquement
+    // La lib Bluefruit gère fast→slow en interne :
+    // setInterval(fast, slow) puis setFastTimeout(N) → switch auto à N secondes
+    // start(total) → stop callback quand _left_timeout atteint 0
     Bluefruit.Advertising.restartOnDisconnect(true);
-
-    // Phase rapide: intervalle 20-30ms pendant 30s
-    Bluefruit.Advertising.setInterval(ADV_FAST_INTERVAL_MIN, ADV_FAST_INTERVAL_MAX);
+    Bluefruit.Advertising.setInterval(ADV_FAST_INTERVAL_MIN, ADV_SLOW_INTERVAL_MIN);
     Bluefruit.Advertising.setFastTimeout(ADV_FAST_TIMEOUT_S);
-
-    // Callback quand l'advertising s'arrête (fin de phase)
     Bluefruit.Advertising.setStopCallback(ble_adv_stopped_callback);
 }
 
 void BleServices::startAdvertising() {
-    _fastAdvDone = false;
-
-    // Phase rapide: intervalle 20-30ms
-    Bluefruit.Advertising.setInterval(ADV_FAST_INTERVAL_MIN, ADV_FAST_INTERVAL_MAX);
+    // La lib gère fast→slow en interne via setFastTimeout.
+    // start(fast+slow) décrémente _left_timeout à chaque phase ;
+    // le stop callback ne fire qu'une seule fois quand _left_timeout atteint 0.
+    Bluefruit.Advertising.setInterval(ADV_FAST_INTERVAL_MIN, ADV_SLOW_INTERVAL_MIN);
     Bluefruit.Advertising.setFastTimeout(ADV_FAST_TIMEOUT_S);
-
-    // Démarre avec timeout = fast + slow phases (total en secondes)
-    // 0 = permanent, mais on veut stopper après les phases
-    // On utilise le callback pour gérer la transition
-    Bluefruit.Advertising.start(ADV_FAST_TIMEOUT_S);
+    Bluefruit.Advertising.start(ADV_FAST_TIMEOUT_S + ADV_SLOW_TIMEOUT_S);
     _advertising = true;
 
-    DEBUG_PRINTLN("[BLE] Advertising started (fast phase)");
-}
-
-void BleServices::startSlowAdvertising() {
-    // Phase lente: intervalle 1000-1500ms pendant 2 minutes
-    Bluefruit.Advertising.setInterval(ADV_SLOW_INTERVAL_MIN, ADV_SLOW_INTERVAL_MAX);
-    Bluefruit.Advertising.setFastTimeout(0);  // Pas de phase rapide
-
-    Bluefruit.Advertising.start(ADV_SLOW_TIMEOUT_S);
-    _advertising = true;
-
-    DEBUG_PRINTLN("[BLE] Advertising switched to slow phase");
+    DEBUG_PRINTLN("[BLE] Advertising started (fast+slow)");
 }
 
 void BleServices::_onAdvStopped() {
     if (_connected) {
-        // Connecté, advertising s'est arrêté normalement
         _advertising = false;
         return;
     }
 
-    if (!_fastAdvDone) {
-        // Phase rapide terminée → passer en phase lente
-        _fastAdvDone = true;
-        startSlowAdvertising();
-    } else {
-        // Phase lente terminée → advertising terminé
-        _advertising = false;
-        DEBUG_PRINTLN("[BLE] Advertising stopped (all phases done)");
+    _advertising = false;
+    DEBUG_PRINTLN("[BLE] Advertising stopped (all phases done)");
 
-        // Notifie main.cpp pour déclencher le System OFF
-        if (_advStoppedCallback) {
-            _advStoppedCallback();
-        }
+    if (_advStoppedCallback) {
+        _advStoppedCallback();
     }
 }
 
@@ -367,13 +340,7 @@ void BleServices::update() {
     case PC_DONE:
         DEBUG_PRINTF("[BLE] Post-connect DONE. mtu=%d chunk=%d\n", _mtuSize, _transferChunkSize);
         _postConnectState = PC_IDLE;
-        // Ne pas passer en idle si un transfert est déjà en cours
-        // (checkAndSync() peut démarrer avant PC_DONE sur connexion rapide)
-        if (!_transferring) {
-            setIdleConnectionMode();
-        } else {
-            DEBUG_PRINTLN("[BLE] PC_DONE: transfert actif, skip idle mode");
-        }
+        // Idle mode géré par main.cpp selon les fichiers flash en attente
         break;
 
     default:
@@ -398,8 +365,6 @@ void BleServices::_onDisconnect(uint16_t connHandle, uint8_t reason) {
     }
 
     // L'advertising redémarrera automatiquement (restartOnDisconnect=true)
-    // Il repartira en phase rapide grâce au callback
-    _fastAdvDone = false;
     _advertising = true;
 }
 
@@ -555,6 +520,13 @@ bool BleServices::continueTransfer() {
         return false;
     }
 
+    // Backoff après un BLOCKED : on ne retente pas avant _transferRetryMs
+    // Évite le spam CPU quand la queue SoftDevice HVN est saturée (loop >> BLE events)
+    if (_transferRetryMs > 0) {
+        if (millis() < _transferRetryMs) return true;
+        _transferRetryMs = 0;
+    }
+
     static bool _waitNotifyMsgShown = false;
     if (!_audioTxChar.notifyEnabled()) {
         if (!_waitNotifyMsgShown) {
@@ -577,6 +549,7 @@ bool BleServices::continueTransfer() {
             sentThisCall += chunkSize;
         } else {
             DEBUG_PRINTF("[BLE] Header notify BLOCKED at %lu/%lu\n", _headerPos, _headerSize);
+            _transferRetryMs = millis() + 25;
             break;
         }
     }
@@ -598,6 +571,7 @@ bool BleServices::continueTransfer() {
             } else {
                 DEBUG_PRINTF("[BLE] Data notify BLOCKED at %lu/%lu (sent this call: %lu)\n",
                              _transferPos, _transferSize, sentThisCall);
+                _transferRetryMs = millis() + 25;
                 break;
             }
         }
@@ -610,8 +584,7 @@ bool BleServices::continueTransfer() {
         uint32_t totalSent = _headerSize + _transferSize;
         DEBUG_PRINTF("[BLE] Transfer complete: %lu bytes sent\n", totalSent);
         _transferring = false;
-
-        setIdleConnectionMode();
+        // Idle mode géré par main.cpp selon les fichiers restants
 
         if (_transferCallback) {
             _transferCallback(true);
@@ -670,8 +643,6 @@ void BleServices::clearBondsAndRestartPairing() {
     // Supprime tous les bonds persistés en flash
     Bluefruit.Periph.clearBonds();
 
-    // Repart en advertising général depuis la phase rapide
-    _fastAdvDone = false;
     startAdvertising();
 
     DEBUG_PRINTLN("[BLE] Advertising general relancé (prêt pour nouvel appairage)");
@@ -694,7 +665,9 @@ void BleServices::setFastConnectionMode() {
     params.conn_sup_timeout  = BLE_SUPERVISION_TIMEOUT;
 
     uint32_t err = sd_ble_gap_conn_param_update(_connHandle, &params);
-    _connMode = CONN_MODE_FAST;
+    if (err == NRF_SUCCESS) {
+        _connMode = CONN_MODE_FAST;
+    }
     DEBUG_PRINTF("[BLE] → Fast mode (7.5-15ms): 0x%lx\n", err);
 }
 

@@ -289,9 +289,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _sectionTitle('À propos'),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Text(
-              'Cobalt Task v1.0.0',
-              style: AppTextStyles.metadata.copyWith(fontSize: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Cobalt Task v1.0.0',
+                  style: AppTextStyles.metadata.copyWith(fontSize: 12),
+                ),
+                const SizedBox(height: 4),
+                StreamBuilder<String?>(
+                  stream: _audioService.bleServiceInstance.firmwareVersionStream,
+                  initialData: _audioService.bleServiceInstance.firmwareVersion,
+                  builder: (context, snapshot) {
+                    final version = snapshot.data;
+                    final bleConnected = _audioService.bleServiceInstance.isConnected;
+                    if (!bleConnected) return const SizedBox.shrink();
+                    return Text(
+                      version != null
+                          ? 'Firmware Cobalt v$version'
+                          : 'Firmware: lecture en cours…',
+                      style: AppTextStyles.metadata.copyWith(fontSize: 12),
+                    );
+                  },
+                ),
+              ],
             ),
           ),
         ],

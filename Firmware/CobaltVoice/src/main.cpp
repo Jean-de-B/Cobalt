@@ -336,6 +336,19 @@ void setup() {
     digitalWrite(PIN_LED_GREEN, HIGH);
     digitalWrite(PIN_LED_BLUE, HIGH);
 
+    // Diagnostic OTA: 3 flashs cyan (vert+bleu) AVANT toute initialisation.
+    // Si visibles apres DFU → firmware demarre correctement.
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(PIN_LED_RED, HIGH);
+        digitalWrite(PIN_LED_GREEN, LOW);
+        digitalWrite(PIN_LED_BLUE, LOW);
+        delay(120);
+        digitalWrite(PIN_LED_GREEN, HIGH);
+        digitalWrite(PIN_LED_BLUE, HIGH);
+        delay(80);
+    }
+    digitalWrite(PIN_LED_RED, LOW);  // Rouge = init continue
+
     // === BLUEFRUIT EN PREMIER (obligatoire avant Serial) ===
     // event_length=40 (50ms) : permet au SoftDevice de pack plusieurs paquets par event
     // hvn_qsize=30 : queue HVN plus large pour buffering notifications
@@ -390,8 +403,14 @@ void setup() {
     bleServices.startAdvertising();
 
     // === LED PROGRESS: VERT = flash init ===
-    digitalWrite(PIN_LED_BLUE, HIGH);
+    // Diagnostic OTA: flash blanc = juste avant init QSPI (si plante ici → prob QSPI)
+    digitalWrite(PIN_LED_RED, LOW);
     digitalWrite(PIN_LED_GREEN, LOW);
+    digitalWrite(PIN_LED_BLUE, LOW);
+    delay(200);
+    digitalWrite(PIN_LED_RED, HIGH);
+    digitalWrite(PIN_LED_BLUE, HIGH);
+    digitalWrite(PIN_LED_GREEN, LOW);  // Retour vert = flash init
 
     // === FLASH STORAGE (offline) ===
     if (flashStorage.begin()) {
@@ -466,11 +485,22 @@ void setup() {
         }
     }
 
+    // === WATCHDOG TIMER (anti-freeze) ===
+    // Démarré après tous les délais d'init. Irrévocable une fois lancé.
+    // Loop() doit rafraîchir RR[0] au moins toutes les 8s, sinon reset matériel.
+    NRF_WDT->CONFIG      = WDT_CONFIG_SLEEP_Msk;   // Continue pendant sd_app_evt_wait()
+    NRF_WDT->CRV         = (32768 * 8) - 1;         // 8 secondes à 32kHz LFCLK
+    NRF_WDT->RREN        = WDT_RREN_RR0_Msk;        // Active reload register 0
+    NRF_WDT->TASKS_START = 1;                        // Démarrage irrévocable
+    DEBUG_PRINTLN("[INIT] Watchdog démarré (8s)");
+
     DEBUG_PRINTLN("PRÊT");
 }
 
 // === LOOP ===
 void loop() {
+    NRF_WDT->RR[0] = WDT_RR_RR_Reload;  // Kick watchdog (must happen at least every 8s)
+
     static uint32_t lastActivityTime = millis();
     uint32_t now = millis();
 
@@ -492,8 +522,12 @@ void loop() {
     static bool wasConnected = false;
     bool isNowConnected = bleServices.isConnected();
     if (isNowConnected && !wasConnected && !recording && !transferring) {
-        // Vient de se connecter → LED éteinte (connecté = silencieux)
-        ledController.off();
+        for (int i = 0; i < 5; i++) {
+            ledController.setColorImmediate(LED_COLOR_GREEN);
+            delay(100);
+            ledController.off();
+            delay(100);
+        }
         if (flashStorage.hasPendingFiles()) {
             DEBUG_PRINTF("[SYNC] Connexion BLE: %lu note(s) offline detectee(s)\n",
                          flashStorage.getPendingCount());
@@ -876,11 +910,13 @@ void loop() {
     }
 
     // === TRANSFERT BLE ===
+    static uint32_t lastSyncAttempt = 0;  // déclaré ici pour reset après transfert
     if (transferring) {
         lastActivityTime = now;
         if (!bleServices.continueTransfer()) {
             transferring = false;
             lastTransferDuration = millis() - transferStartTime;
+            lastSyncAttempt = now;  // Cooldown 500ms avant prochain checkAndSync
 
             float speed = (lastTransferDuration > 0) ?
                           (float)lastTransferBytes * 1000.0f / (float)lastTransferDuration : 0;
@@ -899,11 +935,9 @@ void loop() {
                     if (flashStorage.hasPendingFiles()) {
                         DEBUG_PRINTF("[SYNC] Encore %lu fichier(s) en attente\n",
                                        flashStorage.getPendingCount());
+                        // Rester en fast mode pour le prochain fichier
                     } else {
-                        DEBUG_PRINTLN("[SYNC] Tous les fichiers synchronisés!");
-                        // Reformate LittleFS pour restaurer les temps d'effacement rapides.
-                        // Le BLE peut se déconnecter pendant le format (~15s) — c'est normal,
-                        // toutes les notes sont déjà transférées.
+                        DEBUG_PRINTLN("[SYNC] Tous les fichiers synchronisés");
                         flashStorage.reformat();
                         powerManager.flashDeepPowerDown();
                     }
@@ -912,6 +946,9 @@ void loop() {
                     powerManager.flashDeepPowerDown();
                 }
             } else {
+                // Transfert direct (pas sync) : le passage en idle est délégué
+                // à l'AUTO IDLE (5s d'inactivité) pour éviter le cycle idle↔fast
+                // qui bloque les transferts successifs rapides.
                 audioStorage.clear();
             }
 
@@ -920,24 +957,22 @@ void loop() {
     }
 
     // === SYNC FLASH → BLE (quand idle et connecté, throttled) ===
-    static uint32_t lastSyncAttempt = 0;
     if (!recording && !transferring && (now - lastSyncAttempt >= 500)) {
         lastSyncAttempt = now;
         checkAndSync();
     }
 
-    // === ADVERTISING TERMINÉ SANS CONNEXION → SYSTEM OFF (optim #3) ===
-    // Ne pas System OFF si USB connecté (VBUS réveille immédiatement → boucle reset)
+// === ADVERTISING TERMINÉ SANS CONNEXION ===
     if (advStoppedFlag) {
         advStoppedFlag = false;
-        if (!bleServices.isConnected() && !recording && !transferring && !powerManager.isCharging()) {
-            // Notes offline synchro au prochain réveil — pas de redémarrage en boucle
-            DEBUG_PRINTLN("[PWR] Advertising terminé sans connexion → System OFF");
-            enterSystemOff();
-        } else if (powerManager.isCharging() && !bleServices.isConnected()) {
-            // USB connecté mais pas de BLE: relancer l'advertising
-            DEBUG_PRINTLN("[PWR] Advertising terminé mais USB connecté → restart advertising");
-            bleServices.startAdvertising();
+        if (!bleServices.isConnected() && !recording && !transferring) {
+            lastActivityTime = now;
+            ledController.off();
+            if (powerManager.isCharging()) {
+                DEBUG_PRINTLN("[PWR] Advertising terminé (USB) – appui bouton pour relancer");
+            } else {
+                DEBUG_PRINTLN("[PWR] Advertising terminé – appui bouton pour relancer (auto-off dans 90s)");
+            }
         }
     }
 

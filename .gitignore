@@ -16,6 +16,9 @@ COBALT_TECHNICAL_CONTEXT.md
 # ---------- Firmware binaries ----------
 Firmware/**/*.zip
 
+# ---------- Test / Sandbox ----------
+xiao_rgb_test/
+
 # ---------- IDE ----------
 .idea/
 .vscode/

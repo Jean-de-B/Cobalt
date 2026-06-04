@@ -96,6 +96,9 @@ dependencies:
   # Nordic DFU (Device Firmware Update) pour nRF52840
   nordic_dfu: ^6.1.0
 
+  # Sélecteur de fichier (zip DFU depuis n'importe quel emplacement)
+  file_picker: ^8.0.0
+
   # ===========================================================================
   # GOOGLE SERVICES (Conservés pour migration progressive)
   # ===========================================================================

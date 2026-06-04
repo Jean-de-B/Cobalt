@@ -92,16 +92,19 @@ class DfuService {
     }
 
     // Étape 2: Attendre que le device redémarre en mode bootloader,
-    // puis scanner pour trouver le DfuTarg (nouvelle adresse MAC)
+    // puis scanner pour trouver le DfuTarg.
+    // Note: triggerDfuMode() a déjà attendu 300ms et supprimé le bond.
     _setState(DfuState.waitingForDfu);
     _setStatus('Attente du bootloader (DfuTarg)...');
 
-    // Attendre ~3s que le device redémarre
-    await Future<void>.delayed(const Duration(seconds: 3));
+    // Attendre que le bootloader démarre et commence à advertiser.
+    // triggerDfuMode() a déjà attendu 300ms → total ~1s avant le scan,
+    // ce qui couvre le reset firmware (~800ms) + init bootloader (~200ms).
+    await Future<void>.delayed(const Duration(milliseconds: 700));
 
     // Scanner pour trouver le DfuTarg
     _setStatus('Recherche du bootloader DFU...');
-    final dfuAddress = await _bleService.scanForDfuTarget(timeoutSeconds: 15);
+    final dfuAddress = await _bleService.scanForDfuTarget(timeoutSeconds: 20);
 
     if (dfuAddress == null) {
       _setError('Bootloader DFU non trouvé.\n'

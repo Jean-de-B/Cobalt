@@ -76,10 +76,11 @@
 #define VBAT_REFERENCE          3.0f    // Référence ADC AR_INTERNAL_3_0
 
 // Seuils de tension (mapping linéaire)
-#define VBAT_FULL               4.2f    // Batterie pleine = 100%
-#define VBAT_EMPTY              3.5f    // Batterie vide = 0%
+// Note: l'ADC lit ~0.1V sous la tension réelle à pleine charge (d'où FULL=4.1V)
+#define VBAT_FULL               4.1f    // Batterie pleine = 100% (ADC max mesuré)
+#define VBAT_EMPTY              3.54f   // Batterie vide = 0% (+5% du bas de plage)
 #define VBAT_LOW                3.6f    // Batterie faible (~15%)
-#define VBAT_CRITICAL           3.5f    // Seuil critique - SHUTDOWN
+#define VBAT_CRITICAL           3.5f    // Seuil critique - SHUTDOWN (marge sous VBAT_EMPTY)
 
 // Intervalle de lecture batterie
 #define BATTERY_CHECK_INTERVAL  30000   // 30 secondes
@@ -90,8 +91,8 @@
 
 #define FIRMWARE_VERSION_MAJOR  1
 #define FIRMWARE_VERSION_MINOR  0
-#define FIRMWARE_VERSION_PATCH  0
-#define FIRMWARE_VERSION_STRING "1.0.0"
+#define FIRMWARE_VERSION_PATCH  4
+#define FIRMWARE_VERSION_STRING "1.0.4"
 
 // =============================================================================
 // BLE CONFIGURATION
@@ -143,7 +144,7 @@
 // Phase 2: Slow advertising (économie)
 #define ADV_SLOW_INTERVAL_MIN   1600    // 1000ms (en unités de 0.625ms)
 #define ADV_SLOW_INTERVAL_MAX   2400    // 1500ms
-#define ADV_SLOW_TIMEOUT_S      540     // 9 minutes en mode lent (60s fast + 540s slow = 10 min total)
+#define ADV_SLOW_TIMEOUT_S      540     // 9 min (60s fast + 540s slow = 10 min total)
 
 // Après les deux phases: advertising stoppé → System OFF
 

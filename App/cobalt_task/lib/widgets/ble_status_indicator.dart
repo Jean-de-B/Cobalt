@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import '../constants/app_constants.dart';
 import '../screens/debug_screen.dart';
 import '../services/audio_service.dart';
@@ -99,6 +99,7 @@ class BleStatusIndicator extends StatelessWidget {
       message: tooltip,
       child: InkWell(
         onTap: () => _handleTap(context, state),
+        onLongPress: () => _showConnectionMenu(context, state),
         borderRadius: BorderRadius.circular(20),
         child: Padding(
           padding: const EdgeInsets.all(8),
@@ -110,15 +111,22 @@ class BleStatusIndicator extends StatelessWidget {
 
   void _handleTap(BuildContext context, BleConnectionState state) {
     if (audioService.selectedDeviceId != null) {
-      _showConnectionMenu(context, state);
+      switch (state) {
+        case BleConnectionState.connected:
+        case BleConnectionState.syncing:
+          _showConnectionMenu(context, state);
+        case BleConnectionState.scanning:
+        case BleConnectionState.connecting:
+          break; // scan déjà en cours
+        case BleConnectionState.disconnected:
+        case BleConnectionState.error:
+          audioService.triggerBleReconnect();
+        case BleConnectionState.disabled:
+          audioService.bleServiceInstance.requestBluetoothEnable();
+      }
     } else {
       if (state == BleConnectionState.disabled) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Activez le Bluetooth pour vous connecter'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        audioService.bleServiceInstance.requestBluetoothEnable();
         return;
       }
       if (onScanRequested != null) {
@@ -133,12 +141,6 @@ class BleStatusIndicator extends StatelessWidget {
     final isConnected = state == BleConnectionState.connected;
     final nameColor = isConnected ? AppColors.bleConnected : AppColors.textSecondary;
     final deviceName = audioService.connectedDeviceName ?? 'Cobalt';
-
-    // Relance un scan immédiat si pas connecté (couvre disabled, disconnected, scanning, error)
-    if (state != BleConnectionState.connected &&
-        state != BleConnectionState.connecting) {
-      audioService.triggerBleReconnect();
-    }
 
     showModalBottomSheet(
       context: context,
@@ -437,9 +439,8 @@ class _DfuDialogState extends State<_DfuDialog> {
           if (_state == DfuState.idle) ...[
             const SizedBox(height: 8),
             Text(
-              'Placez le fichier cobalt_update.zip\n'
-              'dans le dossier Download du téléphone,\n'
-              'puis appuyez sur "Lancer".',
+              'Appuyez sur "Choisir le fichier" pour\n'
+              'sélectionner le package firmware (.zip).',
               style: AppTextStyles.metadata,
             ),
           ],
@@ -468,7 +469,7 @@ class _DfuDialogState extends State<_DfuDialog> {
               foregroundColor: Colors.white,
             ),
             onPressed: _startUpdate,
-            child: const Text('Lancer'),
+            child: const Text('Choisir le fichier'),
           ),
         if (_state == DfuState.completed || _state == DfuState.error)
           ElevatedButton(
@@ -487,32 +488,26 @@ class _DfuDialogState extends State<_DfuDialog> {
   }
 
   Future<void> _startUpdate() async {
-    // Demander la permission d'accès au stockage
-    if (Platform.isAndroid) {
-      final status = await Permission.manageExternalStorage.request();
-      if (!status.isGranted) {
-        if (mounted) {
-          setState(() {
-            _status = 'Permission de stockage refusée.\n\n'
-                'Allez dans Paramètres > Applications > Cobalt Task > Permissions\n'
-                'et autorisez l\'accès aux fichiers.';
-          });
-        }
-        return;
+    // Ouvrir le sélecteur de fichier natif (FileType.any car Android filtre
+    // par MIME type et non par extension — les ZIP peuvent être en octet-stream)
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      dialogTitle: 'Sélectionner le firmware Cobalt (.zip)',
+    );
+
+    if (result == null || result.files.isEmpty) return;
+
+    final dfuPath = result.files.single.path;
+    if (dfuPath == null || !File(dfuPath).existsSync()) {
+      if (mounted) {
+        setState(() => _status = 'Fichier introuvable ou inaccessible.');
       }
+      return;
     }
 
-    // Chemin vers le fichier dans le dossier Download
-    const dfuPath = '/storage/emulated/0/Download/cobalt_update.zip';
-
-    // Vérifier que le fichier existe avant de lancer le DFU
-    if (!File(dfuPath).existsSync()) {
+    if (!dfuPath.toLowerCase().endsWith('.zip')) {
       if (mounted) {
-        setState(() {
-          _status = 'Fichier introuvable!\n\n'
-              'Placez le fichier cobalt_update.zip\n'
-              'dans le dossier Download du téléphone.';
-        });
+        setState(() => _status = 'Format invalide — sélectionnez un fichier .zip');
       }
       return;
     }

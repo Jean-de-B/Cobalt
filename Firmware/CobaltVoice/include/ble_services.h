@@ -229,9 +229,6 @@ private:
     uint16_t _mtuSize;
     bool _advertising;
 
-    // Advertising multi-phase
-    bool _fastAdvDone;
-
     // État transfert
     bool _transferring;
     const uint8_t* _transferData;
@@ -244,6 +241,9 @@ private:
     uint32_t _headerSize;
     uint32_t _headerPos;
     bool _headerSent;
+
+    // Backoff après BLOCKED (évite spam CPU quand queue SoftDevice pleine)
+    uint32_t _transferRetryMs = 0;
 
     // Batterie (anti-spam BLE)
     uint8_t _lastBatteryEncoded = 0xFF;  // Valeur impossible → force premier envoi
@@ -262,11 +262,6 @@ private:
      * @brief Configure l'advertising
      */
     void setupAdvertising();
-
-    /**
-     * @brief Démarre la phase lente de l'advertising
-     */
-    void startSlowAdvertising();
 
     /**
      * @brief Négocie le MTU optimal
