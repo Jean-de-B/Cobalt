@@ -70,6 +70,17 @@ public:
     void setCharging();       // Vert fixe
     void setError();          // Blanc clignotant
 
+    // Feedback résultat action IA (déclenché par commande BLE depuis l'app)
+    void setAiSuccess();      // 2 flashs verts
+    void setAiFailure();      // 3 flashs rouges
+    void setAiPending();      // Orange clignotant 5s (contact en attente validation)
+
+    /**
+     * @brief Met à jour les séquences multi-flash IA (appeler depuis loop)
+     * Distinct de update() pour ne pas interférer avec les autres modes
+     */
+    bool isAiSequenceActive() { return _aiFlashActive; }
+
     /**
      * @brief Force une couleur immédiate (sans mode)
      */
@@ -93,6 +104,15 @@ private:
     uint32_t _lastToggleTime; // Pour le clignotement
     uint32_t _blinkInterval;  // Intervalle de clignotement
     bool _flashComplete;      // Pour le mode flash unique
+
+    // Séquence multi-flash pour feedback IA
+    bool _aiFlashActive;
+    LedColor_t _aiFlashColor;
+    uint8_t _aiFlashCount;      // Nombre de flashs restants
+    uint8_t _aiFlashTotal;      // Total de flashs (pour séquence)
+    uint32_t _aiFlashTimer;
+    bool _aiFlashLedOn;
+    uint32_t _aiPendingEndMs;   // Pour le mode orange temporisé
 
     /**
      * @brief Applique une couleur aux pins LED

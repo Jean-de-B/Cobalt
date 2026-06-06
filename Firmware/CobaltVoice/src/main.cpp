@@ -76,10 +76,35 @@ volatile bool advStoppedFlag = false;
 // Timestamp de la connexion BLE courante (0 = déconnecté)
 uint32_t connectedSince = 0;
 
+// Timestamp de la dernière activité (global pour reset après réveil deep sleep)
+uint32_t lastActivityTime = 0;
+
 // === CALLBACK ADVERTISING STOPPED ===
 void onAdvertisingStopped() {
     // Appelé quand toutes les phases d'advertising sont terminées sans connexion
     advStoppedFlag = true;
+}
+
+// === CALLBACK COMMANDE BLE REÇUE (app → firmware) ===
+void onBleCommand(const uint8_t* data, uint16_t len) {
+    if (len == 0) return;
+    switch (data[0]) {
+        case CMD_AI_SUCCESS:
+            DEBUG_PRINTLN("[BLE] AI feedback: SUCCESS");
+            ledController.setAiSuccess();
+            break;
+        case CMD_AI_FAILURE:
+            DEBUG_PRINTLN("[BLE] AI feedback: FAILURE");
+            ledController.setAiFailure();
+            break;
+        case CMD_AI_PENDING:
+            DEBUG_PRINTLN("[BLE] AI feedback: PENDING");
+            ledController.setAiPending();
+            break;
+        default:
+            DEBUG_PRINTF("[BLE] Commande inconnue: 0x%02X\n", data[0]);
+            break;
+    }
 }
 
 // === CALLBACK PDM ===
@@ -309,21 +334,25 @@ void showBatteryStatus() {
     ledController.off();
 }
 
-// === ENTRÉE EN SYSTEM OFF ===
+// === MISE EN VEILLE PROFONDE (System ON sleep, retourne au réveil) ===
 void enterSystemOff() {
-    // Sécurité: ne JAMAIS entrer en System OFF si USB connecté
-    // VBUS réveille immédiatement le nRF52840 → boucle de reset infinie
     if (powerManager.isCharging()) {
-        DEBUG_PRINTLN("[PWR] System OFF bloqué: USB connecté (VBUS wake)");
+        DEBUG_PRINTLN("[PWR] Veille bloquée: USB connecté");
         return;
     }
 
-    DEBUG_PRINTLN("[PWR] → System OFF");
+    DEBUG_PRINTLN("[PWR] → Veille profonde");
     ledController.off();
     bleServices.stopAdvertising();
     delay(100);
-    powerManager.enterDeepSleep();
-    // Ne revient jamais - le réveil = reset complet
+    powerManager.enterDeepSleep();  // Bloque jusqu'à appui bouton, puis retourne
+
+    // Séquence de réveil
+    showBatteryStatus();
+    bleServices.startAdvertising();
+    ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
+    lastActivityTime = millis();
+    DEBUG_PRINTLN("[PWR] Réveil → advertising relancé");
 }
 
 // === SETUP ===
@@ -335,6 +364,12 @@ void setup() {
     digitalWrite(PIN_LED_RED, LOW);
     digitalWrite(PIN_LED_GREEN, HIGH);
     digitalWrite(PIN_LED_BLUE, HIGH);
+
+    // Efface GPREGRET au démarrage de l'app : le bootloader Adafruit ne le fait
+    // pas toujours après un DFU OTA. S'il reste à 0xB1, le prochain reset
+    // (réveil System OFF par bouton) ferait re-entrer le bootloader en mode DFU
+    // au lieu de lancer l'app → montre muette après le premier sleep post-DFU.
+    sd_power_gpregret_clr(0, 0xFF);
 
     // Diagnostic OTA: 3 flashs cyan (vert+bleu) AVANT toute initialisation.
     // Si visibles apres DFU → firmware demarre correctement.
@@ -397,6 +432,9 @@ void setup() {
 
     // Callback quand l'advertising est terminé sans connexion
     bleServices.setAdvertisingStoppedCallback(onAdvertisingStopped);
+
+    // Callback pour les commandes reçues depuis l'app (feedback IA, etc.)
+    bleServices.setCommandCallback(onBleCommand);
 
     // Initialise la valeur batterie BLE AVANT advertising
     bleServices.updateBatteryLevel(powerManager.getLastPercent(), powerManager.isCharging());
@@ -494,6 +532,7 @@ void setup() {
     NRF_WDT->TASKS_START = 1;                        // Démarrage irrévocable
     DEBUG_PRINTLN("[INIT] Watchdog démarré (8s)");
 
+    lastActivityTime = millis();
     DEBUG_PRINTLN("PRÊT");
 }
 
@@ -501,7 +540,6 @@ void setup() {
 void loop() {
     NRF_WDT->RR[0] = WDT_RR_RR_Reload;  // Kick watchdog (must happen at least every 8s)
 
-    static uint32_t lastActivityTime = millis();
     uint32_t now = millis();
 
 #if DEBUG_SERIAL
@@ -977,9 +1015,10 @@ void loop() {
     }
 
     // === AUTO-OFF: SYSTEM OFF APRÈS INACTIVITÉ ===
-    // Une seule fenêtre d'advertising par réveil : après SLEEP_TIMEOUT_MS sans connexion → sleep.
-    // Les notes offline en attente seront synchronisées au prochain réveil connecté.
-    if (!recording && !transferring && !bleServices.isConnected() && !powerManager.isCharging()) {
+    // Ne pas dormir pendant l'advertising : laisser la fenêtre de 10 min s'écouler.
+    // Après fin d'advertising (advStoppedFlag remet lastActivityTime à now), on dort après 90s.
+    if (!recording && !transferring && !bleServices.isConnected() &&
+        !powerManager.isCharging() && !bleServices.isAdvertising()) {
         if (now - lastActivityTime >= SLEEP_TIMEOUT_MS) {
             enterSystemOff();
         }

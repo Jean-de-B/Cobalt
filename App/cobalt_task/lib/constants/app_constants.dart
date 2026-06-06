@@ -52,6 +52,11 @@ class BleConstants {
   /// Commande pour demander la version firmware
   static const int cmdGetVersion = 0xFE;
 
+  /// Feedback résultat action IA → LED montre
+  static const int cmdAiSuccess = 0x10;  // 2 flashs verts
+  static const int cmdAiFailure = 0x11;  // 3 flashs rouges
+  static const int cmdAiPending = 0x12;  // Orange clignotant 5s (contact en attente)
+
   /// MTU demandé à l'appareil (Maximum Transmission Unit)
   /// On demande 512, le firmware négocie à 247 (payload effectif: 244 bytes)
   static const int preferredMtu = 512;

@@ -58,19 +58,13 @@ public:
     void enterLightSleep();
 
     /**
-     * @brief Met le système en System OFF (deep sleep)
-     * Seul un reset ou GPIO peut réveiller
-     * Configure le réveil sur les 3 boutons (D1, D2, D3)
-     * UTILISÉ EN CAS DE BATTERIE CRITIQUE OU INACTIVITÉ
+     * @brief Met le système en veille profonde System ON.
+     * Attache des interruptions GPIO sur les 3 boutons, dort en WFE,
+     * et RETOURNE quand un bouton est pressé (pas de reset complet).
+     * Consommation ~2-3µA vs ~0.4µA pour System OFF, mais réveil fiable
+     * sans passer par le bootloader.
      */
     void enterDeepSleep();
-
-    /**
-     * @brief Configure le réveil par GPIO
-     * @param pin Pin de réveil (bouton)
-     * @param activeLevel Niveau actif (LOW ou HIGH)
-     */
-    void configureWakeupPin(uint32_t pin, uint32_t activeLevel);
 
     /**
      * @brief Désactive tous les périphériques pour économiser l'énergie

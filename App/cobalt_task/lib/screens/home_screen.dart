@@ -208,55 +208,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // ignore: avoid_print
       print('[HomeScreen] Assistant full diag: $status');
 
-      if (!isRoleHeld && !isCobaltVoice && mounted) {
-        _showAssistantSetupDialog(isSamsung);
-      }
+      // Dialog de configuration assistant désactivé (trop intrusif au démarrage)
     } catch (e) {
       // ignore: avoid_print
       print('[HomeScreen] Erreur check assistant: $e');
     }
   }
 
-  void _showAssistantSetupDialog(bool isSamsung) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Assistant vocal'),
-        content: Text(
-          'Pour activer le micro Cobalt avec le bouton Power :\n\n'
-          '1. Sélectionner Cobalt comme assistant par défaut\n'
-          '   (Paramètres > Apps > Apps par défaut > Assistant numérique)\n'
-          '${isSamsung ? '\n2. Configurer la touche latérale Samsung\n'
-          '   (Paramètres > Fonctions avancées > Touche latérale\n'
-          '   > Appui prolongé > Assistant numérique)\n' : ''}'
-          '\nVoulez-vous configurer maintenant ?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Plus tard', style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          if (isSamsung)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _assistantLaunchService.openSideKeySettings();
-              },
-              child: const Text('Touche latérale'),
-            ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              final result = await _assistantLaunchService.requestAssistantRole();
-              // ignore: avoid_print
-              print('[HomeScreen] Role request result: $result');
-            },
-            child: const Text('Configurer'),
-          ),
-        ],
-      ),
-    );
-  }
 
   void _showOverlayPermissionDialog() {
     showDialog(

@@ -115,6 +115,9 @@ class BleService {
   /// Liste des appareils découverts pendant le scan
   final List<ScanResult> _discoveredDevices = [];
 
+  /// Débounce pour stabiliser l'affichage de la liste lors du scan de navigation
+  Timer? _browseDebounceTimer;
+
   // ---------------------------------------------------------------------------
   // STREAM CONTROLLERS (Communication réactive avec l'UI)
   // ---------------------------------------------------------------------------
@@ -364,6 +367,7 @@ class BleService {
     _scanSubscription?.cancel();
     _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
       bool changed = false;
+      bool newDeviceAdded = false;
       for (final result in results) {
         final advName = result.advertisementData.advName;
         final platformName = result.device.platformName;
@@ -377,12 +381,13 @@ class BleService {
             _discoveredDevices[idx] = result; // rafraîchit RSSI
           } else {
             _discoveredDevices.add(result);
+            newDeviceAdded = true;
           }
           changed = true;
         }
       }
-      if (changed) {
-        // Trier : Cobalt Voice en premier, puis par RSSI
+      if (newDeviceAdded) {
+        // Nouvel appareil : trier et publier immédiatement
         _discoveredDevices.sort((a, b) {
           final aName = (a.advertisementData.advName.isNotEmpty
               ? a.advertisementData.advName : a.device.platformName).toLowerCase();
@@ -392,9 +397,27 @@ class BleService {
           final bIsCobalt = bName.startsWith(BleConstants.deviceNamePrefix.toLowerCase());
           if (aIsCobalt && !bIsCobalt) return -1;
           if (!aIsCobalt && bIsCobalt) return 1;
-          return b.rssi.compareTo(a.rssi); // plus fort signal en premier
+          return b.rssi.compareTo(a.rssi);
         });
+        _browseDebounceTimer?.cancel();
         _discoveredDevicesController.add(List.from(_discoveredDevices));
+      } else if (changed) {
+        // Mise à jour RSSI uniquement : débouncer pour éviter l'oscillation d'affichage
+        _browseDebounceTimer?.cancel();
+        _browseDebounceTimer = Timer(const Duration(milliseconds: 800), () {
+          _discoveredDevices.sort((a, b) {
+            final aName = (a.advertisementData.advName.isNotEmpty
+                ? a.advertisementData.advName : a.device.platformName).toLowerCase();
+            final bName = (b.advertisementData.advName.isNotEmpty
+                ? b.advertisementData.advName : b.device.platformName).toLowerCase();
+            final aIsCobalt = aName.startsWith(BleConstants.deviceNamePrefix.toLowerCase());
+            final bIsCobalt = bName.startsWith(BleConstants.deviceNamePrefix.toLowerCase());
+            if (aIsCobalt && !bIsCobalt) return -1;
+            if (!aIsCobalt && bIsCobalt) return 1;
+            return b.rssi.compareTo(a.rssi);
+          });
+          _discoveredDevicesController.add(List.from(_discoveredDevices));
+        });
       }
     });
 

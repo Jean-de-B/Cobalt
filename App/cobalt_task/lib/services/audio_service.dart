@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:record/record.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../constants/app_constants.dart';
+import '../constants/app_constants.dart' show BleConstants, BleConnectionState;
 import '../models/fiche.dart';
 import '../models/voice_note.dart';
 import '../models/ai_action.dart';
@@ -298,9 +298,8 @@ class AudioService {
   static const int _windowMs = 100;
 
   /// RMS minimal de la fenêtre la plus forte pour valider la présence de parole.
-  /// Valeur 600/32767 ≈ 1.8% → en dessous, même les pics sont trop faibles
-  /// pour être de la parole (micro BLE propre ou téléphone silencieux).
-  static const double _minPeakRms = 600;
+  /// Valeur 200/32767 ≈ 0.6% → seuil bas pour accepter les micros BLE faibles.
+  static const double _minPeakRms = 200;
 
   /// Ratio minimum entre la fenêtre la plus forte et la moyenne des fenêtres.
   /// La parole est dynamique : ses pics sont ≥ 2× le fond ambiant.
@@ -711,6 +710,9 @@ class AudioService {
             );
           }
         }
+
+        // Feedback LED montre via BLE
+        _sendAiFeedbackToWatch(actionResult);
 
         // Créer une fiche MEMO pour tracer les paiements réussis
         if (actionResult.action is PaymentAction &&
@@ -1663,6 +1665,37 @@ class AudioService {
         NoteCategory.memo                          => 'Google Tasks',
       },
     };
+  }
+
+  /// Envoie le feedback LED à la montre via BLE selon le résultat de l'action IA
+  void _sendAiFeedbackToWatch(VoiceProcessingResult actionResult) {
+    if (!_bleService.isConnected) return;
+
+    final execResult = actionResult.executionResult;
+    final intent = actionResult.action.intent;
+
+    // Intents qui peuvent être en état "pending" (contact non validé)
+    const pendingIntents = {
+      ActionIntent.sms,
+      ActionIntent.messaging,
+      ActionIntent.message,
+      ActionIntent.call,
+      ActionIntent.payment,
+    };
+
+    int cmd;
+    if (execResult != null && !execResult.success && pendingIntents.contains(intent)) {
+      cmd = BleConstants.cmdAiPending;
+    } else if (execResult?.success ?? true) {
+      cmd = BleConstants.cmdAiSuccess;
+    } else {
+      cmd = BleConstants.cmdAiFailure;
+    }
+
+    _bleService.sendCommand([cmd]).catchError((e) {
+      // ignore: avoid_print
+      print('AI_FEEDBACK: Impossible d\'envoyer feedback LED: $e');
+    });
   }
 
   /// Libère toutes les ressources

@@ -13,6 +13,10 @@
 #include <nrf_power.h>
 #include <nrf_gpio.h>
 #include <nrf_soc.h>
+#include <Arduino.h>
+
+static volatile bool _sleepWakeupFlag = false;
+static void _sleepWakeupIsr() { _sleepWakeupFlag = true; }
 
 // Instance globale
 PowerManager powerManager;
@@ -97,25 +101,11 @@ bool PowerManager::isCharging() {
     return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
 }
 
-void PowerManager::configureWakeupPin(uint32_t pin, uint32_t activeLevel) {
-    nrf_gpio_cfg_sense_input(
-        pin,
-        (activeLevel == LOW) ? NRF_GPIO_PIN_PULLUP : NRF_GPIO_PIN_PULLDOWN,
-        (activeLevel == LOW) ? NRF_GPIO_PIN_SENSE_LOW : NRF_GPIO_PIN_SENSE_HIGH
-    );
-}
-
 void PowerManager::enterLightSleep() {
-    // Ne pas dormir si USB est connecté (casse le CDC Serial)
-    if (isCharging()) {
-        return;
-    }
-
-    // System ON Sleep - le CPU dort jusqu'à la prochaine interruption
-    // La SoftDevice utilise sd_app_evt_wait() qui gère WFE correctement
-    __WFE();  // Wait For Event
-    __SEV();  // Set Event (pour éviter race condition)
-    __WFE();  // Wait For Event
+    if (isCharging()) return;
+    __WFE();
+    __SEV();
+    __WFE();
 }
 
 void PowerManager::disableAllPeripherals() {
@@ -155,28 +145,35 @@ void PowerManager::flashWakeUp() {
 }
 
 void PowerManager::enterDeepSleep() {
-    DEBUG_PRINTLN("[PWR] Entering System OFF...");
+    DEBUG_PRINTLN("[PWR] Entering System ON sleep (GPIO interrupt wake)...");
 
-    // Désactive les périphériques non essentiels
     disableAllPeripherals();
 
-    // Optim #6: Configure le réveil sur les 3 boutons
-    uint32_t activeLevel = BUTTON_ACTIVE_LOW ? LOW : HIGH;
-    configureWakeupPin(PIN_BUTTON, activeLevel);
-    configureWakeupPin(PIN_BUTTON_VOL_UP, activeLevel);
-    configureWakeupPin(PIN_BUTTON_VOL_DOWN, activeLevel);
+    // Si un bouton est déjà pressé au moment d'entrer en veille,
+    // le FALLING edge ne se déclenchera pas → forcer le flag directement.
+    const int wake_level = BUTTON_ACTIVE_LOW ? LOW : HIGH;
+    _sleepWakeupFlag = (digitalRead(PIN_BUTTON)        == wake_level) ||
+                       (digitalRead(PIN_BUTTON_VOL_UP)  == wake_level) ||
+                       (digitalRead(PIN_BUTTON_VOL_DOWN) == wake_level);
 
-    DEBUG_PRINTLN("[PWR] Wake sources: D1, D2, D3");
+    const int trigger = BUTTON_ACTIVE_LOW ? FALLING : RISING;
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON),         _sleepWakeupIsr, trigger);
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_UP),  _sleepWakeupIsr, trigger);
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_DOWN),_sleepWakeupIsr, trigger);
 
-    delay(100);  // Laisse le temps aux messages Serial de sortir
+    DEBUG_PRINTLN("[PWR] Sleeping — wake on D1/D2/D3");
 
-    // System OFF via SoftDevice (~0.4µA)
-    sd_power_system_off();
+    while (!_sleepWakeupFlag) {
+        NRF_WDT->RR[0] = WDT_RR_RR_Reload;  // Kick WDT (irrévocable, timeout 8s)
+        sd_app_evt_wait();
+    }
 
-    // Fallback si SoftDevice n'est pas actif
-    NRF_POWER->SYSTEMOFF = 1;
+    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));
+    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_UP));
+    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_DOWN));
 
-    while(1) { __WFI(); }
+    flashWakeUp();
+    DEBUG_PRINTLN("[PWR] Wake from sleep (button press)");
 }
 
 bool PowerManager::update() {

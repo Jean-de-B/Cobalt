@@ -24,6 +24,14 @@ void LedController::begin() {
     _blinkInterval = LED_BLINK_SLOW_MS;
     _flashComplete = false;
 
+    _aiFlashActive = false;
+    _aiFlashColor = LED_COLOR_OFF;
+    _aiFlashCount = 0;
+    _aiFlashTotal = 0;
+    _aiFlashTimer = 0;
+    _aiFlashLedOn = false;
+    _aiPendingEndMs = 0;
+
     DEBUG_PRINTLN("[LED] Controller initialized");
 }
 
@@ -110,7 +118,78 @@ void LedController::set(LedColor_t color, LedMode_t mode) {
     setLedState(_ledState);
 }
 
+// === Feedback IA ===
+
+void LedController::setAiSuccess() {
+    _aiFlashActive = true;
+    _aiFlashColor = LED_COLOR_GREEN;
+    _aiFlashTotal = 2;
+    _aiFlashCount = _aiFlashTotal * 2;  // ON + OFF par flash
+    _aiFlashLedOn = false;
+    _aiFlashTimer = millis();
+    _aiPendingEndMs = 0;
+    applyColor(LED_COLOR_OFF);
+}
+
+void LedController::setAiFailure() {
+    _aiFlashActive = true;
+    _aiFlashColor = LED_COLOR_RED;
+    _aiFlashTotal = 3;
+    _aiFlashCount = _aiFlashTotal * 2;
+    _aiFlashLedOn = false;
+    _aiFlashTimer = millis();
+    _aiPendingEndMs = 0;
+    applyColor(LED_COLOR_OFF);
+}
+
+void LedController::setAiPending() {
+    _aiFlashActive = true;
+    _aiFlashColor = LED_COLOR_YELLOW;
+    _aiFlashTotal = 0;  // 0 = mode temporisé (pas de comptage)
+    _aiFlashCount = 0;
+    _aiFlashLedOn = false;
+    _aiFlashTimer = millis();
+    _aiPendingEndMs = millis() + LED_AI_PENDING_MS;
+    applyColor(LED_COLOR_OFF);
+}
+
 void LedController::update() {
+    // Séquence multi-flash IA (prioritaire sur les autres modes)
+    if (_aiFlashActive) {
+        uint32_t now = millis();
+
+        if (_aiFlashTotal == 0) {
+            // Mode orange temporisé (pending)
+            if (now >= _aiPendingEndMs) {
+                _aiFlashActive = false;
+                applyColor(LED_COLOR_OFF);
+                // Restaure le mode courant
+                setLedState(_ledState);
+                return;
+            }
+            if (now - _aiFlashTimer >= LED_AI_FLASH_MS) {
+                _aiFlashTimer = now;
+                _aiFlashLedOn = !_aiFlashLedOn;
+                applyColor(_aiFlashLedOn ? _aiFlashColor : LED_COLOR_OFF);
+            }
+            return;
+        }
+
+        // Mode séquence flash comptée
+        if (_aiFlashCount > 0 && (now - _aiFlashTimer >= LED_AI_FLASH_MS)) {
+            _aiFlashTimer = now;
+            _aiFlashLedOn = !_aiFlashLedOn;
+            applyColor(_aiFlashLedOn ? _aiFlashColor : LED_COLOR_OFF);
+            _aiFlashCount--;
+        }
+        if (_aiFlashCount == 0) {
+            _aiFlashActive = false;
+            applyColor(LED_COLOR_OFF);
+            setLedState(_ledState);  // Restaure l'état courant
+        }
+        return;
+    }
+
     if (_currentMode == LED_MODE_OFF || _currentMode == LED_MODE_SOLID) {
         return;  // Pas besoin de mise à jour
     }

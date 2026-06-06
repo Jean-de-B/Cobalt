@@ -90,9 +90,9 @@
 // =============================================================================
 
 #define FIRMWARE_VERSION_MAJOR  0
-#define FIRMWARE_VERSION_MINOR  5
+#define FIRMWARE_VERSION_MINOR  6
 #define FIRMWARE_VERSION_PATCH  0
-#define FIRMWARE_VERSION_STRING "0.5.0"
+#define FIRMWARE_VERSION_STRING "0.6.0"
 
 // =============================================================================
 // BLE CONFIGURATION
@@ -173,6 +173,8 @@
 #define LED_BLINK_FAST_MS       100     // Clignotement rapide
 #define LED_BLINK_SLOW_MS       500     // Clignotement lent
 #define LED_BRIEF_FLASH_MS      500     // Flash bref (0.5s)
+#define LED_AI_FLASH_MS         200     // Durée d'un flash feedback IA
+#define LED_AI_PENDING_MS       5000    // Durée orange pending validation
 
 // =============================================================================
 // DEBUG
@@ -202,6 +204,11 @@
 
 #define CMD_ENTER_DFU           0xFD    // Entrer en mode DFU OTA (bootloader)
 #define CMD_GET_VERSION         0xFE    // Demander la version firmware
+
+// Feedback résultat action IA (app → firmware)
+#define CMD_AI_SUCCESS          0x10    // Action exécutée avec succès → 2 flashs verts
+#define CMD_AI_FAILURE          0x11    // Action échouée → 3 flashs rouges
+#define CMD_AI_PENDING          0x12    // Contact en attente de validation → orange 5s
 
 // =============================================================================
 // BUTTON EVENT CODES (envoyés via BLE caractéristique custom)

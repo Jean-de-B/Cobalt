@@ -89,6 +89,7 @@ class ValidatedContactsService {
     final db = await _databaseService.database;
     final normalized = spokenName.trim().toLowerCase();
 
+    // 1. Match exact
     final results = await db.query(
       'validated_contacts',
       where: 'spoken_name = ?',
@@ -96,8 +97,31 @@ class ValidatedContactsService {
       limit: 1,
     );
 
-    if (results.isEmpty) return null;
-    return ValidatedContact.fromMap(results.first);
+    if (results.isNotEmpty) return ValidatedContact.fromMap(results.first);
+
+    // 2. Match flou : Llama3 peut extraire "marie" ou "marie dupont" pour le même audio.
+    //    On cherche si un spoken_name validé est contenu dans la requête, ou vice versa.
+    final all = await db.query('validated_contacts');
+    if (all.isEmpty) return null;
+
+    final searchWords = normalized.split(RegExp(r'\s+'));
+
+    for (final row in all) {
+      final storedName = (row['spoken_name'] as String).toLowerCase();
+      final storedWords = storedName.split(RegExp(r'\s+'));
+
+      // Tous les mots du stocké sont dans la requête OU vice versa
+      final storedInSearch = storedWords.every((w) => searchWords.contains(w));
+      final searchInStored = searchWords.every((w) => storedWords.contains(w));
+
+      if (storedInSearch || searchInStored) {
+        // ignore: avoid_print
+        print('[ValidatedContacts] Match flou: "$normalized" ≈ "$storedName"');
+        return ValidatedContact.fromMap(row);
+      }
+    }
+
+    return null;
   }
 
   /// Enregistre un mapping definitif prenom → contact
