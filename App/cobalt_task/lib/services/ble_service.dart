@@ -766,45 +766,76 @@ class BleService {
   }
 
   /// Envoie la commande DFU pour faire entrer l'appareil en mode bootloader.
-  /// Supprime le bond BLE avant que DfuTarg n'apparaisse, afin d'éviter que
-  /// Android tente un chiffrement avec les anciennes clés (= connexion rejetée).
+  /// Utilise le service Legacy DFU (0x1531) si disponible, sinon 0xFD via NUS.
   Future<bool> triggerDfuMode() async {
-    if (_rxCharacteristic == null || !isConnected) {
+    if (!isConnected) {
       // ignore: avoid_print
-      print('BLE DFU: Non connecté ou RX non disponible');
+      print('BLE DFU: Non connecté');
       return false;
     }
 
     final device = _connectedDevice!;
     _dfuTargetAddress = device.remoteId.str;
-    // ignore: avoid_print
-    print('BLE DFU: Envoi commande DFU (0xFD) à $_dfuTargetAddress');
 
-    // Désactiver la reconnexion automatique pendant le DFU
     _autoReconnectEnabled = false;
     _reconnectTimer?.cancel();
 
     try {
-      await _rxCharacteristic!.write(
-        [BleConstants.cmdEnterDfu],
-        withoutResponse: true,
-      );
-      // ignore: avoid_print
-      print('BLE DFU: Commande envoyée, suppression du bond dans 300ms...');
+      // Chercher le Control Point Legacy DFU (0x1531 sur service 0x1530)
+      BluetoothCharacteristic? dfuControlPoint;
+      for (final svc in device.servicesList) {
+        if (svc.uuid.toString().toLowerCase().contains('1530')) {
+          for (final chr in svc.characteristics) {
+            if (chr.uuid.toString().toLowerCase().contains('1531')) {
+              dfuControlPoint = chr;
+              break;
+            }
+          }
+        }
+      }
 
-      // Le firmware exécute disconnect(600ms) + GPREGRET + reset = ~800ms total.
-      // On supprime le bond rapidement (avant que le bootloader commence à advertiser)
-      // pour qu'Android ne tente pas de chiffrer avec les anciennes clés.
+      if (dfuControlPoint != null) {
+        // ignore: avoid_print
+        print('BLE DFU: Service 0x1530 trouvé — déclenchement via 0x1531');
+        try {
+          await dfuControlPoint.setNotifyValue(true);
+        } catch (_) {
+          // Ignoré : le device peut déjà avoir rebooté après la souscription
+        }
+        try {
+          // Start DFU (0x01), image type Application (0x04)
+          await dfuControlPoint.write([0x01, 0x04], withoutResponse: false);
+          // ignore: avoid_print
+          print('BLE DFU: [0x01, 0x04] écrit sur 0x1531');
+        } catch (e) {
+          // GATT_ERROR 133 = connexion perdue pendant l'écriture.
+          // La commande a pu être reçue avant la déconnexion → on continue vers le scan.
+          // ignore: avoid_print
+          print('BLE DFU: Erreur écriture 0x1531 ($e) — device peut-être déjà en DFU, scan quand même');
+        }
+      } else if (_rxCharacteristic != null) {
+        // ignore: avoid_print
+        print('BLE DFU: 0x1530 absent — fallback 0xFD via NUS');
+        await _rxCharacteristic!.write(
+          [BleConstants.cmdEnterDfu],
+          withoutResponse: true,
+        );
+        // ignore: avoid_print
+        print('BLE DFU: Commande 0xFD envoyée');
+      } else {
+        // ignore: avoid_print
+        print('BLE DFU: Aucun moyen de déclencher le DFU');
+        _autoReconnectEnabled = true;
+        return false;
+      }
+
       await Future.delayed(const Duration(milliseconds: 300));
 
-      // Supprimer le bond AVANT que DfuTarg soit visible : Android ne tentera
-      // plus de chiffrer la connexion avec les clés du device applicatif.
       try {
         await device.removeBond();
         // ignore: avoid_print
         print('BLE DFU: Bond supprimé pour $_dfuTargetAddress');
       } catch (e) {
-        // removeBond peut échouer si déjà déconnecté — ignoré car non bloquant
         // ignore: avoid_print
         print('BLE DFU: removeBond ignoré: $e');
       }
@@ -812,7 +843,7 @@ class BleService {
       return true;
     } catch (e) {
       // ignore: avoid_print
-      print('BLE DFU: Erreur envoi commande: $e');
+      print('BLE DFU: Erreur déclenchement DFU: $e');
       _autoReconnectEnabled = true;
       return false;
     }
@@ -846,38 +877,32 @@ class BleService {
             .map((e) => e.toString().toLowerCase())
             .toList();
 
-        // Log tous les devices (une seule fois par adresse)
-        if (!loggedDevices.contains(addr)) {
-          loggedDevices.add(addr);
-          // ignore: avoid_print
-          print('BLE DFU SCAN: "$name" @ $addr  services=$serviceUuids  rssi=${result.rssi}');
-        }
-
-        // Critère 1: Nom contient "dfu" (DfuTarg, etc.)
+        // Critère 1: Nom contient "dfu" — XIAO_DFU, DfuTarg, etc.
         final nameMatch = name.isNotEmpty &&
-            (name.toLowerCase().contains('dfutarg') ||
-             name.toLowerCase().contains('dfu'));
+            name.toLowerCase().contains('dfu');
 
-        // Critère 2: Service UUID DFU — 0xFE59 (Nordic Secure) ou 0x1530 (Adafruit Legacy)
+        // Critère 2: Service UUID DFU — 0xFE59 (Nordic Secure) ou 0x1530 (Legacy)
         final serviceMatch = serviceUuids.any((uuid) =>
             uuid.contains('fe59') || uuid.contains('1530'));
 
-        // Critère 3: Même adresse que le device applicatif.
-        // Le bootloader Adafruit conserve l'adresse BLE.
-        // On vérifie l'advName (nom réel dans le paquet advertising), PAS le name
-        // combiné : Android peut cacher "Cobalt XXXX" en platformName même quand
-        // le bootloader n'émet aucun nom — ce qui bloquerait le critère à tort.
-        final isNormalAppAdv = advName.toLowerCase().startsWith('cobalt');
-        final addressMatch = _dfuTargetAddress != null &&
-            addr == _dfuTargetAddress &&
-            !isNormalAppAdv;
+        // Log chaque device une seule fois
+        if (!loggedDevices.contains(addr)) {
+          loggedDevices.add(addr);
+          // ignore: avoid_print
+          print('BLE DFU SCAN: adv="$advName" platform="$platformName" @ $addr'
+              '  svcs=$serviceUuids  rssi=${result.rssi}');
+          if (!(nameMatch || serviceMatch)) {
+            // ignore: avoid_print
+            print('  → REJETÉ: name=${nameMatch ? "OUI" : "non"}'
+                ', svc=${serviceMatch ? "OUI" : "non"}');
+          }
+        }
 
-        if (nameMatch || serviceMatch || addressMatch) {
+        if (nameMatch || serviceMatch) {
           // ignore: avoid_print
           print('BLE DFU: *** DFU TARGET TROUVÉ! ***  "$name" @ $addr  '
               '(name=${nameMatch ? "OUI" : "non"}, '
-              'service=${serviceMatch ? "OUI" : "non"}, '
-              'addr=${addressMatch ? "OUI" : "non"})');
+              'service=${serviceMatch ? "OUI" : "non"})');
           if (!completer.isCompleted) {
             completer.complete(addr);
           }
@@ -910,6 +935,9 @@ class BleService {
   void enableAutoReconnect() {
     _autoReconnectEnabled = true;
     _reconnectAttempts = 0;
+    if (_selectedDeviceId != null) {
+      _scheduleReconnect();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -955,6 +983,7 @@ class BleService {
 
         // ignore: avoid_print
         print('BLE DATA: Header CVOX valide! Taille ADPCM: $_expectedDataSize bytes');
+        // ignore: avoid_print
         print('BLE DATA: Taille totale attendue: ${AudioConstants.cvoxHeaderSize + _expectedDataSize!} bytes');
 
         _updateState(BleConnectionState.syncing);
@@ -976,7 +1005,7 @@ class BleService {
       final percent = (progress * 100).toInt();
       if (percent % 10 == 0 && percent > 0) {
         // ignore: avoid_print
-        print('BLE DATA: Progression ${percent}% (${_dataBuffer.length}/$totalExpected bytes)');
+        print('BLE DATA: Progression $percent% (${_dataBuffer.length}/$totalExpected bytes)');
       }
     }
 

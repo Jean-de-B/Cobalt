@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:nordic_dfu/nordic_dfu.dart';
 import 'ble_service.dart';
 
+// ignore: avoid_print
+void _dfuLog(String msg) => print('[DFU] $msg');
+
 /// État du processus DFU
 enum DfuState {
   idle,
@@ -100,7 +103,7 @@ class DfuService {
     // Attendre que le bootloader démarre et commence à advertiser.
     // triggerDfuMode() a déjà attendu 300ms → total ~1s avant le scan,
     // ce qui couvre le reset firmware (~800ms) + init bootloader (~200ms).
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await Future<void>.delayed(const Duration(milliseconds: 2500));
 
     // Scanner pour trouver le DfuTarg
     _setStatus('Recherche du bootloader DFU...');
@@ -118,12 +121,45 @@ class DfuService {
     _setState(DfuState.uploading);
     _setStatus('Transfert du firmware...');
 
+    // Timer de diagnostic : log toutes les 5s une fois le transfert à 100%
+    // pour mesurer combien de temps le bootloader met à répondre.
+    Timer? diagTimer;
+    final sw = Stopwatch();
+
+    void cancelDiag() {
+      diagTimer?.cancel();
+      diagTimer = null;
+    }
+
+    void startDiag() {
+      sw.start();
+      diagTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _dfuLog('DIAG post-100%: ${sw.elapsed.inSeconds}s écoulés'
+            ' | état=${_state.name}'
+            ' | progress=${(_progress * 100).toInt()}%'
+            ' | aucun callback (onFirmwareValidating/onDeviceDisconnected/'
+            'onDfuCompleted) reçu depuis 100%');
+      });
+    }
+
     try {
+      _dfuLog('startDfu → adresse=$dfuAddress  forceDfu=true');
       await NordicDfu().startDfu(
         dfuAddress,
         firmwareZipPath,
         fileInAsset: false,
-        forceDfu: true,
+        // PRN activé : le bootloader Adafruit nRF52 sature sa file HCI quand
+        // les paquets arrivent plus vite qu'il n'écrit en flash → gel à 100%.
+        // dataDelay=400 : délai inter-objets recommandé pour SDK 15/16, donne
+        // le temps au bootloader de préparer la flash entre chaque objet (4 KB).
+        // rebootTime=1000 : laisse 1 s au bootloader pour rebooter.
+        // Note : numberOfPackets (PRN=8) n'est pas exposé par nordic_dfu 6.2 ;
+        // la lib Android sous-jacente choisit la valeur par défaut (12).
+        androidSpecialParameter: const AndroidSpecialParameter(
+          packetReceiptNotificationsEnabled: true,
+          dataDelay: 400,
+          rebootTime: 1000,
+        ),
         onProgressChanged: (
           String deviceAddress,
           int? percent,
@@ -136,6 +172,12 @@ class DfuService {
             _progress = percent / 100.0;
             _progressController.add(_progress);
             _setStatus('Transfert: $percent% (${speed?.toStringAsFixed(1)} KB/s)');
+            if (percent == 100) {
+              _dfuLog('▶ 100% atteint — démarrage timer diagnostic.'
+                  ' En attente de: onFirmwareValidating → onDeviceDisconnecting'
+                  ' → onDeviceDisconnected → onDfuCompleted');
+              startDiag();
+            }
           }
         },
         onError: (
@@ -144,13 +186,14 @@ class DfuService {
           int? errorType,
           String? message,
         ) {
-          // ignore: avoid_print
-          print('DFU ERROR: $error, type: $errorType, msg: $message');
+          cancelDiag();
+          _dfuLog('✗ onError: code=$error  type=$errorType  msg="$message"'
+              '  (après ${sw.elapsed.inSeconds}s post-100%)');
           _setError('Erreur DFU: ${message ?? "code $error"}');
         },
         onDfuCompleted: (String deviceAddress) {
-          // ignore: avoid_print
-          print('DFU: Terminé avec succès!');
+          cancelDiag();
+          _dfuLog('✓ onDfuCompleted (après ${sw.elapsed.inSeconds}s post-100%)');
           _setState(DfuState.completed);
           _setStatus('Mise à jour terminée!');
           _progress = 1.0;
@@ -158,39 +201,94 @@ class DfuService {
           _bleService.enableAutoReconnect();
         },
         onDfuAborted: (String deviceAddress) {
-          // ignore: avoid_print
-          print('DFU: Abandonné');
+          cancelDiag();
+          _dfuLog('✗ onDfuAborted (après ${sw.elapsed.inSeconds}s post-100%)');
           _setError('Mise à jour annulée');
           _bleService.enableAutoReconnect();
         },
         onDeviceConnecting: (String deviceAddress) {
+          _dfuLog('→ onDeviceConnecting: $deviceAddress');
           _setStatus('Connexion au bootloader...');
         },
         onDeviceConnected: (String deviceAddress) {
+          _dfuLog('→ onDeviceConnected: $deviceAddress');
           _setStatus('Connecté au bootloader');
         },
         onDfuProcessStarting: (String deviceAddress) {
+          _dfuLog('→ onDfuProcessStarting');
           _setStatus('Démarrage de la mise à jour...');
         },
         onDfuProcessStarted: (String deviceAddress) {
+          _dfuLog('→ onDfuProcessStarted');
           _setStatus('Transfert en cours...');
         },
         onEnablingDfuMode: (String deviceAddress) {
+          _dfuLog('→ onEnablingDfuMode');
           _setStatus('Activation du mode DFU...');
         },
         onFirmwareValidating: (String deviceAddress) {
+          _dfuLog('→ onFirmwareValidating (après ${sw.elapsed.inSeconds}s post-100%)');
           _setStatus('Validation du firmware...');
         },
         onDeviceDisconnecting: (String deviceAddress) {
+          _dfuLog('→ onDeviceDisconnecting (après ${sw.elapsed.inSeconds}s post-100%)');
           _setStatus('Redémarrage de l\'appareil...');
         },
         onDeviceDisconnected: (String deviceAddress) {
+          _dfuLog('→ onDeviceDisconnected (après ${sw.elapsed.inSeconds}s post-100%)');
           _setStatus('Appareil redémarré');
+          // Fallback: le bootloader Adafruit (0x1530) ne déclenche pas toujours
+          // onDfuCompleted. Disconnect à 100% = DFU réussi.
+          if (_progress >= 1.0 && _state == DfuState.uploading) {
+            cancelDiag();
+            _dfuLog('✓ Complété via fallback onDeviceDisconnected');
+            _setState(DfuState.completed);
+            _setStatus('Mise à jour terminée!');
+            _bleService.enableAutoReconnect();
+          }
+        },
+      ).timeout(
+        const Duration(minutes: 3),
+        onTimeout: () {
+          cancelDiag();
+          if (_progress >= 1.0 && _state == DfuState.uploading) {
+            _dfuLog('✓ Timeout 3 min après 100% → traité comme succès'
+                ' (${sw.elapsed.inSeconds}s post-100%)');
+            _setState(DfuState.completed);
+            _setStatus('Mise à jour terminée!');
+            _bleService.enableAutoReconnect();
+          } else if (_state == DfuState.uploading) {
+            _dfuLog('✗ Timeout 3 min à ${(_progress * 100).toInt()}%');
+            _setError('Timeout DFU (${(_progress * 100).toInt()}% transféré)');
+            _bleService.enableAutoReconnect();
+          }
+          return null;
         },
       );
 
+      cancelDiag();
+      _dfuLog('startDfu Future terminé | état final=${_state.name}'
+          '  progress=${(_progress * 100).toInt()}%'
+          '  post-100%=${sw.elapsed.inSeconds}s');
+
+      // Fallback final: Future terminée normalement sans onDfuCompleted.
+      if (_state == DfuState.uploading) {
+        if (_progress >= 1.0) {
+          _dfuLog('✓ Fallback final: Future à 100% sans onDfuCompleted → succès');
+          _setState(DfuState.completed);
+          _setStatus('Mise à jour terminée!');
+          _bleService.enableAutoReconnect();
+        } else {
+          _dfuLog('✗ Fallback final: Future terminée à ${(_progress * 100).toInt()}% sans completion');
+          _setError('DFU interrompu à ${(_progress * 100).toInt()}%');
+          _bleService.enableAutoReconnect();
+        }
+      }
+
       return _state == DfuState.completed;
     } catch (e) {
+      cancelDiag();
+      _dfuLog('✗ Exception: $e');
       _setError('Erreur DFU: $e');
       _bleService.enableAutoReconnect();
       return false;

@@ -208,8 +208,10 @@ bool FlashStorage::loadNextIntoAudioStorage() {
 
     uint32_t fileSize = file.size();
     if (fileSize <= sizeof(AudioFileHeader_t)) {
-        DEBUG_PRINTLN("[FLASH] Fichier trop petit");
+        DEBUG_PRINTLN("[FLASH] Fichier trop petit - suppression");
         file.close();
+        ExternalFS.remove(filepath);
+        _fileCount = (_fileCount > 0) ? _fileCount - 1 : 0;
         return false;
     }
 
@@ -217,16 +219,20 @@ bool FlashStorage::loadNextIntoAudioStorage() {
     AudioFileHeader_t header;
     uint32_t bytesRead = file.read((uint8_t*)&header, sizeof(AudioFileHeader_t));
     if (bytesRead != sizeof(AudioFileHeader_t)) {
-        DEBUG_PRINTLN("[FLASH] Erreur lecture header");
+        DEBUG_PRINTLN("[FLASH] Erreur lecture header - suppression");
         file.close();
+        ExternalFS.remove(filepath);
+        _fileCount = (_fileCount > 0) ? _fileCount - 1 : 0;
         return false;
     }
 
     // Vérifie le magic number
     if (header.magic[0] != 'C' || header.magic[1] != 'V' ||
         header.magic[2] != 'O' || header.magic[3] != 'X') {
-        DEBUG_PRINTLN("[FLASH] Magic number invalide");
+        DEBUG_PRINTLN("[FLASH] Magic number invalide - suppression");
         file.close();
+        ExternalFS.remove(filepath);
+        _fileCount = (_fileCount > 0) ? _fileCount - 1 : 0;
         return false;
     }
 
@@ -235,8 +241,10 @@ bool FlashStorage::loadNextIntoAudioStorage() {
 
     // Vérifie que ça tient dans le buffer RAM
     if (dataSize > AUDIO_BUFFER_SIZE) {
-        DEBUG_PRINTF("[FLASH] Fichier trop gros: %lu > %lu\n", dataSize, (uint32_t)AUDIO_BUFFER_SIZE);
+        DEBUG_PRINTF("[FLASH] Fichier trop gros: %lu > %lu - suppression\n", dataSize, (uint32_t)AUDIO_BUFFER_SIZE);
         file.close();
+        ExternalFS.remove(filepath);
+        _fileCount = (_fileCount > 0) ? _fileCount - 1 : 0;
         return false;
     }
 

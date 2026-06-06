@@ -89,10 +89,10 @@
 // FIRMWARE VERSION (pour OTA DFU)
 // =============================================================================
 
-#define FIRMWARE_VERSION_MAJOR  1
-#define FIRMWARE_VERSION_MINOR  0
-#define FIRMWARE_VERSION_PATCH  4
-#define FIRMWARE_VERSION_STRING "1.0.4"
+#define FIRMWARE_VERSION_MAJOR  0
+#define FIRMWARE_VERSION_MINOR  5
+#define FIRMWARE_VERSION_PATCH  0
+#define FIRMWARE_VERSION_STRING "0.5.0"
 
 // =============================================================================
 // BLE CONFIGURATION
