@@ -365,6 +365,10 @@ void setup() {
     digitalWrite(PIN_LED_GREEN, HIGH);
     digitalWrite(PIN_LED_BLUE, HIGH);
 
+    // Coupe l'IMU LSM6DS3TR-C (non utilisé) — économise ~0.5–0.9 mA en permanence
+    pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+    digitalWrite(PIN_LSM6DS3TR_C_POWER, LOW);
+
     // Efface GPREGRET au démarrage de l'app : le bootloader Adafruit ne le fait
     // pas toujours après un DFU OTA. S'il reste à 0xB1, le prochain reset
     // (réveil System OFF par bouton) ferait re-entrer le bootloader en mode DFU

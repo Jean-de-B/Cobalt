@@ -240,6 +240,16 @@ class VoiceInputProcessor {
       return TimerAction(reasoning: 'Timer (local)', durationSeconds: seconds, label: 'Timer');
     }
 
+    // --- BATTERIE ---
+    if (RegExp(r"(niveau\s+(de\s+)?(la\s+)?batterie|batterie\s+(est|à|reste|il\s+reste)|combien\s+(il\s+reste|reste[- ]t[- ]il)\s+(de\s+)?batterie|autonomie\s+restante|charge\s+restante|t[ue]\s+as\s+combien\s+de\s+batterie|c.?est\s+quoi\s+la\s+batterie)").hasMatch(t)) {
+      return QueryBatteryAction(reasoning: 'Demande batterie (local)');
+    }
+
+    // --- HEURE ---
+    if (RegExp(r"(quelle\s+heure\s+(est[- ]il|il\s+est)|il\s+est\s+quelle\s+heure|dis[- ]moi\s+l.heure|c.?est\s+quoi\s+l.heure|l.heure\s+s.?il\s+te\s+pla[iî]t|donne[- ]moi\s+l.heure|heure\s+actuelle|quelle\s+est\s+l.heure)").hasMatch(t)) {
+      return QueryTimeAction(reasoning: 'Demande heure (local)');
+    }
+
     // --- APP LAUNCH ---
     final openMatch = RegExp(r'^ouvr[ei]s?\s+(.+)$').firstMatch(t);
     if (openMatch != null) {

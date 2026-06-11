@@ -13,6 +13,7 @@ import 'validated_contacts_service.dart';
 import 'incoming_history_service.dart';
 import 'lock_screen_service.dart';
 import 'settings_service.dart';
+import 'ble_service.dart';
 import 'contact_lookup_service.dart';
 
 /// =============================================================================
@@ -147,6 +148,8 @@ class LocalActionDispatcher {
         media: _handleMedia,
         appLaunch: _handleAppLaunch,
         payment: _handlePayment,
+        queryTime: _handleQueryTime,
+        queryBattery: _handleQueryBattery,
         none: _handleNone,
       );
     } catch (e) {
@@ -662,6 +665,24 @@ class LocalActionDispatcher {
   }
 
   /// Gère les non-actions (mémos)
+  Future<ActionResult> _handleQueryBattery(QueryBatteryAction action) async {
+    final level = BleService().batteryLevel;
+    if (level < 0) {
+      return ActionResult.failure(ActionIntent.queryBattery, 'Niveau de batterie non disponible');
+    }
+    return ActionResult.success(ActionIntent.queryBattery, 'La batterie est à $level pourcent');
+  }
+
+  Future<ActionResult> _handleQueryTime(QueryTimeAction action) async {
+    final now = DateTime.now();
+    final h = now.hour;
+    final m = now.minute;
+    final timeStr = m == 0
+        ? 'Il est $h heures'
+        : 'Il est $h heures $m';
+    return ActionResult.success(ActionIntent.queryTime, timeStr);
+  }
+
   Future<ActionResult> _handleNone(NoAction action) async {
     // Pour les mémos, on pourrait les sauvegarder en base locale
     return ActionResult.success(

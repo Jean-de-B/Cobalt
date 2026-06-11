@@ -33,10 +33,14 @@ bool PdmAudio::begin() {
     _userCallback = nullptr;
     _totalSamples = 0;
 
+    // Éteint le micro dès le démarrage (PDM.end() laisse le pin en INPUT flottant)
+    pinMode(PIN_PDM_PWR, OUTPUT);
+    digitalWrite(PIN_PDM_PWR, LOW);
+
     // Enregistre le callback PDM
     PDM.onReceive(onPDMdata);
 
-    DEBUG_PRINTLN("[PDM] Audio module initialized");
+    DEBUG_PRINTLN("[PDM] Audio module initialized (mic off)");
     return true;
 }
 
@@ -74,6 +78,10 @@ void PdmAudio::stopCapture() {
 
     _capturing = false;
     PDM.end();
+
+    // PDM.end() laisse le pin en INPUT (flottant) — forcer LOW en OUTPUT
+    pinMode(PIN_PDM_PWR, OUTPUT);
+    digitalWrite(PIN_PDM_PWR, LOW);
 
     DEBUG_PRINTF("[PDM] Capture stopped. Total samples: %lu\n", _totalSamples);
 }

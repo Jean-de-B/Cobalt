@@ -180,7 +180,7 @@
 // DEBUG
 // =============================================================================
 
-#define DEBUG_SERIAL            1       // 1 = debug (UART activé)
+#define DEBUG_SERIAL            0       // 1 = debug (UART activé)
 #define DEBUG_BAUD_RATE         115200
 
 // BLE debug log characteristic UUID

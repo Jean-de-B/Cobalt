@@ -664,6 +664,14 @@ class AudioService {
             final noteStr = a.note != null ? ' pour ${a.note}' : '';
             return ('💸 $amt€ → $contact$noteStr', 'Merci de valider le paiement');
           },
+          queryTime: (a) {
+            final msg = actionResult?.executionResult?.message ?? '';
+            return ('🕐 Heure', msg);
+          },
+          queryBattery: (a) {
+            final msg = actionResult?.executionResult?.message ?? '';
+            return ('🔋 Batterie', msg);
+          },
           none: (a) => (a.memo ?? '', ''),
         );
 

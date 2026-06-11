@@ -20,6 +20,8 @@ enum ActionIntent {
   media,
   appLaunch,
   payment,
+  queryTime,
+  queryBattery,
   none,
 }
 
@@ -208,6 +210,8 @@ sealed class AiAction {
     required T Function(MediaAction) media,
     required T Function(AppLaunchAction) appLaunch,
     required T Function(PaymentAction) payment,
+    required T Function(QueryTimeAction) queryTime,
+    required T Function(QueryBatteryAction) queryBattery,
     required T Function(NoAction) none,
   }) {
     return switch (this) {
@@ -223,6 +227,8 @@ sealed class AiAction {
       MediaAction action => media(action),
       AppLaunchAction action => appLaunch(action),
       PaymentAction action => payment(action),
+      QueryTimeAction action => queryTime(action),
+      QueryBatteryAction action => queryBattery(action),
       NoAction action => none(action),
     };
   }
@@ -241,6 +247,8 @@ sealed class AiAction {
     T Function(MediaAction)? media,
     T Function(AppLaunchAction)? appLaunch,
     T Function(PaymentAction)? payment,
+    T Function(QueryTimeAction)? queryTime,
+    T Function(QueryBatteryAction)? queryBattery,
     T Function(NoAction)? none,
     required T Function() orElse,
   }) {
@@ -257,6 +265,8 @@ sealed class AiAction {
       MediaAction action => media?.call(action) ?? orElse(),
       AppLaunchAction action => appLaunch?.call(action) ?? orElse(),
       PaymentAction action => payment?.call(action) ?? orElse(),
+      QueryTimeAction action => queryTime?.call(action) ?? orElse(),
+      QueryBatteryAction action => queryBattery?.call(action) ?? orElse(),
       NoAction action => none?.call(action) ?? orElse(),
     };
   }
@@ -621,6 +631,38 @@ final class AppLaunchAction extends AiAction {
 
   @override
   String toString() => 'AppLaunchAction(appName: $appName, packageName: $packageName)';
+}
+
+/// Action demande de batterie - Dire le niveau de batterie via TTS
+final class QueryBatteryAction extends AiAction {
+  const QueryBatteryAction({required super.reasoning})
+      : super(intent: ActionIntent.queryBattery);
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'intent': 'query_battery',
+        'reasoning': reasoning,
+        'params': {},
+      };
+
+  @override
+  String toString() => 'QueryBatteryAction()';
+}
+
+/// Action demande d'heure - Dire l'heure actuelle via TTS
+final class QueryTimeAction extends AiAction {
+  const QueryTimeAction({required super.reasoning})
+      : super(intent: ActionIntent.queryTime);
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'intent': 'query_time',
+        'reasoning': reasoning,
+        'params': {},
+      };
+
+  @override
+  String toString() => 'QueryTimeAction()';
 }
 
 // =============================================================================
