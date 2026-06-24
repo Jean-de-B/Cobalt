@@ -16,7 +16,7 @@
 // =============================================================================
 
 // Bouton Push-to-Talk
-#define PIN_BUTTON          D9          // Bouton externe principal (PTT)
+#define PIN_BUTTON          D10         // Bouton externe principal (PTT)
 #define PIN_BUTTON_VOL_UP   D3          // Bouton Volume Up (anciennement D2)
 #define PIN_BUTTON_VOL_DOWN D2          // Bouton Volume Down (anciennement D3)
 #define BUTTON_ACTIVE_LOW   true        // true si le bouton tire vers GND
@@ -91,8 +91,8 @@
 
 #define FIRMWARE_VERSION_MAJOR  0
 #define FIRMWARE_VERSION_MINOR  6
-#define FIRMWARE_VERSION_PATCH  0
-#define FIRMWARE_VERSION_STRING "0.6.0"
+#define FIRMWARE_VERSION_PATCH  1
+#define FIRMWARE_VERSION_STRING "0.6.1"
 
 // =============================================================================
 // BLE CONFIGURATION
@@ -180,7 +180,7 @@
 // DEBUG
 // =============================================================================
 
-#define DEBUG_SERIAL            0       // 1 = debug (UART activé)
+#define DEBUG_SERIAL            1       // 1 = debug (UART activé)
 #define DEBUG_BAUD_RATE         115200
 
 // BLE debug log characteristic UUID

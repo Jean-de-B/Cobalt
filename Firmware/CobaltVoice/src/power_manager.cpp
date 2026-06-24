@@ -13,6 +13,7 @@
 #include <nrf_power.h>
 #include <nrf_gpio.h>
 #include <nrf_soc.h>
+#include <nrf_gpiote.h>
 #include <Arduino.h>
 
 static volatile bool _sleepWakeupFlag = false;
@@ -145,35 +146,29 @@ void PowerManager::flashWakeUp() {
 }
 
 void PowerManager::enterDeepSleep() {
-    DEBUG_PRINTLN("[PWR] Entering System ON sleep (GPIO interrupt wake)...");
+    DEBUG_PRINTLN("[PWR] Entering System OFF (~0.4uA) — wake on D1/D2/D3...");
 
     disableAllPeripherals();
 
-    // Si un bouton est déjà pressé au moment d'entrer en veille,
-    // le FALLING edge ne se déclenchera pas → forcer le flag directement.
-    const int wake_level = BUTTON_ACTIVE_LOW ? LOW : HIGH;
-    _sleepWakeupFlag = (digitalRead(PIN_BUTTON)        == wake_level) ||
-                       (digitalRead(PIN_BUTTON_VOL_UP)  == wake_level) ||
-                       (digitalRead(PIN_BUTTON_VOL_DOWN) == wake_level);
+    // Arrête le SoftDevice proprement avant System OFF
+    // (sinon sd_power_system_off() retourne une erreur)
+    sd_softdevice_disable();
 
-    const int trigger = BUTTON_ACTIVE_LOW ? FALLING : RISING;
-    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON),         _sleepWakeupIsr, trigger);
-    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_UP),  _sleepWakeupIsr, trigger);
-    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_DOWN),_sleepWakeupIsr, trigger);
+    // Configure les trois boutons comme sources de réveil System OFF.
+    // nrf_gpio_cfg_sense_input() est requis pour System OFF (GPIOTE ne fonctionne pas).
+    nrf_gpio_pin_pull_t pull = BUTTON_ACTIVE_LOW ? NRF_GPIO_PIN_PULLUP : NRF_GPIO_PIN_PULLDOWN;
+    nrf_gpio_pin_sense_t sense = BUTTON_ACTIVE_LOW ? NRF_GPIO_PIN_SENSE_LOW : NRF_GPIO_PIN_SENSE_HIGH;
 
-    DEBUG_PRINTLN("[PWR] Sleeping — wake on D1/D2/D3");
+    nrf_gpio_cfg_sense_input(g_ADigitalPinMap[PIN_BUTTON],         pull, sense);
+    nrf_gpio_cfg_sense_input(g_ADigitalPinMap[PIN_BUTTON_VOL_UP],  pull, sense);
+    nrf_gpio_cfg_sense_input(g_ADigitalPinMap[PIN_BUTTON_VOL_DOWN], pull, sense);
 
-    while (!_sleepWakeupFlag) {
-        NRF_WDT->RR[0] = WDT_RR_RR_Reload;  // Kick WDT (irrévocable, timeout 8s)
-        sd_app_evt_wait();
-    }
-
-    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));
-    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_UP));
-    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON_VOL_DOWN));
-
-    flashWakeUp();
-    DEBUG_PRINTLN("[PWR] Wake from sleep (button press)");
+    // System OFF : consommation ~0.4µA. Le réveil par GPIO = reset matériel → setup() re-exécuté.
+    // Cette ligne ne retourne jamais.
+    NRF_POWER->SYSTEMOFF = 1;
+    // Barrière mémoire au cas où le compilateur réordonne
+    __DSB();
+    while (1) { __WFE(); }
 }
 
 bool PowerManager::update() {
@@ -183,14 +178,51 @@ bool PowerManager::update() {
         return !isBatteryCritical();
     }
 
-    _lastCheckTime = now;
-    _lastVoltage = readBatteryVoltage();
-    _lastPercent = voltageToPercent(_lastVoltage);
+    float newVoltage = readBatteryVoltage();
+    uint8_t newPercent = voltageToPercent(newVoltage);
 
-    DEBUG_PRINTF("[PWR] Battery: %.2fV (%d%%) %s\n",
-                 _lastVoltage,
-                 _lastPercent,
-                 isCharging() ? "[CHARGING]" : "");
+    // Calcul vitesse charge/décharge dès la deuxième lecture
+    if (_prevCheckTime != 0 && _prevVoltage > 0) {
+        float elapsedMin = (now - _prevCheckTime) / 60000.0f;
+        float dvdt_mv_min = (newVoltage - _prevVoltage) * 1000.0f / elapsedMin;  // mV/min
+
+        // Estimation autonomie restante basée sur la vitesse de décharge
+        const char* trend = (dvdt_mv_min > 2.0f) ? "▲ CHARGE" :
+                            (dvdt_mv_min < -2.0f) ? "▼ DECHARGE" : "≈ STABLE";
+
+        if (dvdt_mv_min < -2.0f) {
+            // Temps restant estimé jusqu'à VBAT_EMPTY (en heures)
+            float mv_restants = (newVoltage - VBAT_EMPTY) * 1000.0f;
+            float heures_restantes = mv_restants / (-dvdt_mv_min * 60.0f);
+            DEBUG_PRINTF("[PWR] %.2fV (%d%%) %s | %.1fmV/min → ~%.1fh restantes %s\n",
+                         newVoltage, newPercent, trend,
+                         dvdt_mv_min, heures_restantes,
+                         isCharging() ? "[CHARGING]" : "");
+        } else if (dvdt_mv_min > 2.0f) {
+            // Temps restant estimé jusqu'à VBAT_FULL (en minutes)
+            float mv_restants = (VBAT_FULL - newVoltage) * 1000.0f;
+            float min_restantes = mv_restants / dvdt_mv_min;
+            DEBUG_PRINTF("[PWR] %.2fV (%d%%) %s | +%.1fmV/min → ~%.0fmin pour plein %s\n",
+                         newVoltage, newPercent, trend,
+                         dvdt_mv_min, min_restantes,
+                         isCharging() ? "[CHARGING]" : "");
+        } else {
+            DEBUG_PRINTF("[PWR] %.2fV (%d%%) %s | %.1fmV/min %s\n",
+                         newVoltage, newPercent, trend,
+                         dvdt_mv_min,
+                         isCharging() ? "[CHARGING]" : "");
+        }
+    } else {
+        DEBUG_PRINTF("[PWR] %.2fV (%d%%) %s\n",
+                     newVoltage, newPercent,
+                     isCharging() ? "[CHARGING]" : "");
+    }
+
+    _prevVoltage = _lastVoltage;
+    _prevCheckTime = _lastCheckTime;
+    _lastCheckTime = now;
+    _lastVoltage = newVoltage;
+    _lastPercent = newPercent;
 
     if (isBatteryCritical()) {
         DEBUG_PRINTLN("[PWR] !!! BATTERY CRITICAL !!!");

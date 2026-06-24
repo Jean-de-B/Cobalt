@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:android_intent_plus/flag.dart';
 import 'package:flutter/material.dart';
 import '../constants/app_constants.dart';
 import '../models/voice_note.dart';
@@ -145,17 +147,27 @@ class _MemoCardState extends State<MemoCard> {
         ),
         if (badge != null) ...[
           const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-            decoration: BoxDecoration(
-              color: visuals.color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              badge,
-              style: AppTextStyles.metadata.copyWith(
-                color: visuals.color,
-                fontWeight: FontWeight.w600,
+          GestureDetector(
+            onTap: _launchBadgeApp,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: visuals.color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    badge,
+                    style: AppTextStyles.metadata.copyWith(
+                      color: visuals.color,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  Icon(Icons.open_in_new, size: 10, color: visuals.color),
+                ],
               ),
             ),
           ),
@@ -568,6 +580,60 @@ class _MemoCardState extends State<MemoCard> {
   // ===========================================================================
   // HELPERS
   // ===========================================================================
+
+  /// Ouvre l'application correspondant au badge de la fiche pour vérification
+  Future<void> _launchBadgeApp() async {
+    final action = _action;
+    final params = action?['params'] as Map<String, dynamic>? ?? {};
+    final resolved = action?['resolved'] as Map<String, dynamic>? ?? {};
+
+    String? packageName;
+
+    switch (_intent) {
+      case 'calendar':
+        packageName = 'com.google.android.calendar';
+      case 'sms':
+        packageName = 'com.google.android.apps.messaging';
+      case 'messaging':
+      case 'message':
+        final app = (resolved['app'] as String? ?? params['app'] as String? ?? '').toLowerCase();
+        packageName = switch (app) {
+          'whatsapp' || 'wa' => 'com.whatsapp',
+          'telegram' || 'tg' => 'org.telegram.messenger',
+          'signal'           => 'org.thoughtcrime.securesms',
+          'messenger'        => 'com.facebook.orca',
+          _                  => 'com.google.android.apps.messaging',
+        };
+      case 'payment':
+        packageName = 'com.sumeria.app';
+      case 'none':
+        final s = SettingsService();
+        packageName = switch (_intent) {
+          _ => switch (widget.note.category) {
+            NoteCategory.todo || NoteCategory.shopping || NoteCategory.memo =>
+              switch (s.notesService) {
+                'samsung' => 'com.samsung.android.app.notes',
+                'notion'  => 'notion.id',
+                _         => 'com.google.android.apps.tasks',
+              },
+            NoteCategory.event   => 'com.google.android.calendar',
+            NoteCategory.contact => 'com.google.android.contacts',
+          },
+        };
+    }
+
+    if (packageName == null) return;
+
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.MAIN',
+        category: 'android.intent.category.LAUNCHER',
+        package: packageName,
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK],
+      );
+      await intent.launch();
+    } catch (_) {}
+  }
 
   /// "Mer 16 mars 2026"
   String _formatDateOnly(DateTime dt) {

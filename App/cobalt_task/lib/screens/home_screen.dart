@@ -11,10 +11,8 @@ import '../constants/app_constants.dart';
 import '../models/incoming_message.dart';
 import '../models/voice_note.dart';
 import '../models/ai_action.dart';
-import '../services/ai_sorter_service.dart';
 import '../services/audio_service.dart';
 import '../services/database_service.dart';
-import '../services/google_bridge_service.dart';
 import '../services/local_action_dispatcher.dart';
 import '../services/overlay_permission_service.dart';
 import '../services/validated_contacts_service.dart';
@@ -874,62 +872,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             minChildSize: 0.25,
             maxChildSize: 0.92,
             expand: false,
-            builder: (context, scrollController) => _GoogleSheet(
-              audioService: _audioService,
+            builder: (context, scrollController) => _HistorySheet(
+              databaseService: _databaseService,
               scrollController: scrollController,
-              getCategoryIcon: _getCategoryIcon,
-              getCategoryColor: _getCategoryColor,
-              getCategoryLabel: _getCategoryLabel,
             ),
           ),
         ),
       ),
     );
-  }
-
-  IconData _getCategoryIcon(NoteCategory category) {
-    switch (category) {
-      case NoteCategory.todo:
-        return Icons.check_circle_outline;
-      case NoteCategory.shopping:
-        return Icons.shopping_cart_outlined;
-      case NoteCategory.event:
-        return Icons.event;
-      case NoteCategory.contact:
-        return Icons.person_outline;
-      case NoteCategory.memo:
-        return Icons.edit_note;
-    }
-  }
-
-  Color _getCategoryColor(NoteCategory category) {
-    switch (category) {
-      case NoteCategory.todo:
-        return AppColors.categoryTodo;
-      case NoteCategory.shopping:
-        return AppColors.categoryShopping;
-      case NoteCategory.event:
-        return AppColors.categoryEvent;
-      case NoteCategory.contact:
-        return AppColors.categoryContact;
-      case NoteCategory.memo:
-        return AppColors.categoryMemo;
-    }
-  }
-
-  String _getCategoryLabel(NoteCategory category) {
-    switch (category) {
-      case NoteCategory.todo:
-        return 'Tasks';
-      case NoteCategory.shopping:
-        return 'Courses';
-      case NoteCategory.event:
-        return 'Calendar';
-      case NoteCategory.contact:
-        return 'Contacts';
-      case NoteCategory.memo:
-        return 'Docs';
-    }
   }
 
   Widget _buildTransferIndicator() {
@@ -1093,26 +1043,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _audioService.stopRecording();
   }
 
-  /// Renvoie true si la note doit apparaître dans la liste.
-  ///
-  /// Seules les tâches tracées sont affichées : celles qui créent un enregistrement
-  /// dans un service externe (calendrier, SMS, messagerie, paiement) ou un mémo.
-  /// Les actions directes (alarme, timer, appel, GPS, média, système) sont
-  /// auto-validées et n'ont pas besoin d'être listées.
   bool _isTrackedAction(VoiceNote note) {
-    // Toujours afficher les notes en cours ou en erreur
-    if (note.isProcessing || note.errorMessage != null) return true;
+    // Masquer les erreurs et les notes vides
+    if (note.errorMessage != null) return false;
+
+    // Conserver les notes en cours de traitement (feedback UX)
+    if (note.isProcessing) return true;
 
     final json = note.actionJson;
     if (json == null || json.isEmpty) {
-      // Ancienne note sans actionJson : afficher par défaut
-      return true;
+      // Masquer si aucun contenu textuel
+      return note.text.isNotEmpty || note.summary.isNotEmpty;
     }
 
     try {
       final map = jsonDecode(json) as Map<String, dynamic>;
       final intent = map['intent'] as String? ?? 'none';
-      const directActions = {
+      // Actions non persistantes (directes ou requêtes ponctuelles)
+      const hiddenIntents = {
         'alarm',
         'timer',
         'system_control',
@@ -1120,8 +1068,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         'navigation',
         'media',
         'app_launch',
+        'query_time',
+        'query_battery',
       };
-      return !directActions.contains(intent);
+      return !hiddenIntents.contains(intent);
     } catch (_) {
       return true;
     }
@@ -1655,23 +1605,44 @@ class _FullContactPickerState extends State<_FullContactPicker> {
 }
 
 /// =============================================================================
-/// Google Sheet (compact header + full scrollable history)
+/// History Sheet — toutes les commandes vocales, format debug compact
 /// =============================================================================
 
-class _GoogleSheet extends StatelessWidget {
-  final AudioService audioService;
+class _HistorySheet extends StatelessWidget {
+  final DatabaseService databaseService;
   final ScrollController scrollController;
-  final IconData Function(NoteCategory) getCategoryIcon;
-  final Color Function(NoteCategory) getCategoryColor;
-  final String Function(NoteCategory) getCategoryLabel;
 
-  const _GoogleSheet({
-    required this.audioService,
+  const _HistorySheet({
+    required this.databaseService,
     required this.scrollController,
-    required this.getCategoryIcon,
-    required this.getCategoryColor,
-    required this.getCategoryLabel,
   });
+
+  static String _intentLabel(String intent) => switch (intent) {
+    'calendar'      => 'Calendar',
+    'sms'           => 'SMS',
+    'messaging'     => 'Message',
+    'message'       => 'Message',
+    'alarm'         => 'Alarme',
+    'timer'         => 'Timer',
+    'call'          => 'Appel',
+    'navigation'    => 'GPS',
+    'media'         => 'Média',
+    'app_launch'    => 'Appli',
+    'system_control'=> 'Sys',
+    'query_time'    => 'Heure',
+    'query_battery' => 'Batterie',
+    'payment'       => 'Paiement',
+    'none'          => 'Mémo',
+    _               => intent,
+  };
+
+  static Color _intentColor(String intent) => switch (intent) {
+    'calendar'       => AppColors.categoryEvent,
+    'sms' || 'messaging' || 'message' => AppColors.categoryContact,
+    'payment'        => AppColors.categoryShopping,
+    'none'           => AppColors.categoryMemo,
+    _                => AppColors.textSecondary,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -1682,7 +1653,6 @@ class _GoogleSheet extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Drag handle
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10),
             child: Container(
@@ -1693,7 +1663,6 @@ class _GoogleSheet extends StatelessWidget {
               ),
             ),
           ),
-          // Header
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Align(
@@ -1702,22 +1671,21 @@ class _GoogleSheet extends StatelessWidget {
             ),
           ),
           const Divider(color: AppColors.border, height: 1),
-          // Actions history (all, scrollable)
           Expanded(
-            child: StreamBuilder<List<SyncAction>>(
-              stream: audioService.googleHistoryStream,
-              initialData: audioService.googleActionHistory,
+            child: StreamBuilder<List<VoiceNote>>(
+              stream: databaseService.notesStream,
+              initialData: databaseService.lastNotes,
               builder: (context, snapshot) {
-                final actions = snapshot.data ?? [];
+                final notes = snapshot.data ?? [];
 
-                if (actions.isEmpty) {
+                if (notes.isEmpty) {
                   return const Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(Icons.history, size: 40, color: AppColors.textTertiary),
                         SizedBox(height: 8),
-                        Text('Aucune action', style: AppTextStyles.metadata),
+                        Text('Aucune commande', style: AppTextStyles.metadata),
                       ],
                     ),
                   );
@@ -1725,46 +1693,86 @@ class _GoogleSheet extends StatelessWidget {
 
                 return ListView.builder(
                   controller: scrollController,
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: actions.length,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: notes.length,
                   itemBuilder: (context, index) {
-                    final action = actions[index];
+                    final note = notes[index];
+                    final hasError = note.errorMessage != null;
+                    final isProcessing = note.isProcessing;
+
+                    String intent = 'none';
+                    String appLabel = '…';
+                    Color appColor = AppColors.textSecondary;
+                    if (note.actionJson != null && note.actionJson!.isNotEmpty) {
+                      try {
+                        final map = jsonDecode(note.actionJson!) as Map<String, dynamic>;
+                        intent = map['intent'] as String? ?? 'none';
+                        appLabel = _intentLabel(intent);
+                        appColor = _intentColor(intent);
+                      } catch (_) {}
+                    } else if (!isProcessing) {
+                      appLabel = 'Mémo';
+                      appColor = AppColors.categoryMemo;
+                    }
+
+                    final title = note.summary.isNotEmpty
+                        ? note.summary
+                        : note.text.isNotEmpty
+                            ? note.text
+                            : '—';
+                    final hasAudio = note.audioPath.isNotEmpty;
+
                     return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                       child: Row(
                         children: [
-                          Icon(
-                            action.success ? Icons.check_circle : Icons.error,
-                            size: 14,
-                            color: action.success ? AppColors.bleConnected : Colors.red,
-                          ),
-                          const SizedBox(width: 8),
-                          Icon(
-                            getCategoryIcon(action.category),
-                            size: 14,
-                            color: getCategoryColor(action.category),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            getCategoryLabel(action.category),
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: getCategoryColor(action.category),
+                          // Macaron statut
+                          Container(
+                            width: 8, height: 8,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isProcessing
+                                  ? AppColors.textSecondary
+                                  : hasError
+                                      ? Colors.red
+                                      : AppColors.bleConnected,
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 6),
+                          // Chip intent
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: appColor.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              appLabel,
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                                color: appColor,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          // Titre
                           Expanded(
                             child: Text(
-                              action.title,
+                              title,
                               style: const TextStyle(
-                                fontSize: 12,
+                                fontSize: 11,
                                 color: AppColors.textPrimary,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
+                          // Indicateur audio
+                          if (hasAudio) ...[
+                            const SizedBox(width: 4),
+                            const Icon(Icons.mic, size: 10, color: AppColors.textTertiary),
+                          ],
                         ],
                       ),
                     );

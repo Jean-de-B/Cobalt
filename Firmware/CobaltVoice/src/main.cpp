@@ -334,25 +334,19 @@ void showBatteryStatus() {
     ledController.off();
 }
 
-// === MISE EN VEILLE PROFONDE (System ON sleep, retourne au réveil) ===
+// === MISE EN VEILLE PROFONDE (System OFF ~0.4µA, réveil = reset matériel) ===
+// Ne retourne jamais. Le réveil par bouton relance setup() depuis le début.
 void enterSystemOff() {
     if (powerManager.isCharging()) {
         DEBUG_PRINTLN("[PWR] Veille bloquée: USB connecté");
         return;
     }
 
-    DEBUG_PRINTLN("[PWR] → Veille profonde");
+    DEBUG_PRINTLN("[PWR] → System OFF");
     ledController.off();
     bleServices.stopAdvertising();
-    delay(100);
-    powerManager.enterDeepSleep();  // Bloque jusqu'à appui bouton, puis retourne
-
-    // Séquence de réveil
-    showBatteryStatus();
-    bleServices.startAdvertising();
-    ledController.set(LED_COLOR_BLUE, LED_MODE_BLINK_SLOW);
-    lastActivityTime = millis();
-    DEBUG_PRINTLN("[PWR] Réveil → advertising relancé");
+    delay(50);
+    powerManager.enterDeepSleep();  // Ne retourne jamais — réveil = reset
 }
 
 // === SETUP ===
@@ -934,8 +928,8 @@ void loop() {
         }
     }
 
-    // Activité si bouton maintenu ou BLE connecté
-    if (btnMain.isPressed() || btnVolUp.isPressed() || btnVolDown.isPressed() || bleServices.isConnected()) {
+    // Activité si bouton maintenu (la connexion BLE seule ne maintient plus l'éveil)
+    if (btnMain.isPressed() || btnVolUp.isPressed() || btnVolDown.isPressed()) {
         lastActivityTime = now;
     }
 

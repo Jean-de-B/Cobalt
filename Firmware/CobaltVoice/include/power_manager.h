@@ -106,6 +106,10 @@ private:
     bool _adcInitialized = false;
     bool _flashInDeepPowerDown = false;
 
+    // Suivi de la vitesse charge/décharge
+    float _prevVoltage = 0;
+    uint32_t _prevCheckTime = 0;
+
     /**
      * @brief Convertit la tension en pourcentage
      * Utilise une courbe de décharge LiPo approximative
